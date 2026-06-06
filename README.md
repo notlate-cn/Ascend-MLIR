@@ -1,22 +1,40 @@
 # Ascend-MLIR
 
-Ascend-MLIR is an MLIR-based compiler infrastructure for Ascend hardware, featuring the AFIR (Ascend Frontend IR) dialect.
+Ascend-MLIR is an MLIR-based compiler infrastructure for Ascend hardware.
+The active Ascend V2 path is an Ascend-owned lowering stack from
+MLIR/Linalg/Tensor IR through Normalize, Kernelize, Schedule, Realize,
+Translate, CANN/AscendC source generation, runtime artifacts, and debug
+contracts. Legacy frontend surfaces are kept as isolated compatibility
+surfaces and are not the organizing boundary for the Ascend V2 compiler path.
 
 ## Features
 
-- **AFIR Dialect**: A high-level dialect for representing computational operations targeting Ascend hardware
-  - `afir.add` - Element-wise addition
-  - `afir.sub` - Element-wise subtraction
-  - `afir.mul` - Element-wise multiplication
-  - `afir.div` - Element-wise division
+- **Ascend V2 Conversion Pipeline**: Normalize, Kernelize, Schedule,
+  Realize, and Translate passes under `lib/Conversion/Ascend`.
 
-- **AFIRDialectBuilder**: Convenient builder interface for creating AFIR operations (inspired by onnx-mlir)
+- **CANN / AscendC Target Emission**: Translation from AscendC Kernel MLIR to
+  CANN-standard AscendC source, host tiling code, artifact manifests, and run
+  manifests.
 
-- **ShapeHelperOpInterface**: Interface for shape inference on AFIR operations (inspired by onnx-mlir)
+- **AscendC API Extensions**: Project-owned helper APIs fill gaps that are not
+  covered directly by the official AscendC API. The model follows the earlier
+  GE autofuse `compiler/graph/optimize/autofuse/ascendc/api` pattern: keep
+  handwritten API shims as an explicit, reusable API layer, emit them only when
+  required, and do not spread target-specific helper logic into pass internals
+  or debug tooling.
 
-- **Conversion Passes**:
-  - StableHLO to AFIR conversion
-  - AFIR to ASC-IR (PyAsc) conversion
+- **Debug Contracts and Workbench**: `ascend-debug` consumes versioned compiler
+  artifacts such as stage manifests, kernel DAGs, schedule decisions, memory
+  plans, and artifact manifests. Stage MLIR dumps remain source browsing and
+  fallback material, not the primary semantic interface.
+
+- **Runtime Session**: `runtime-session` and `lib/Runtime` provide the runtime
+  center for AscendC kernel compilation, CPU simulation, profiling, NPU wiring,
+  task-graph execution, and run-manifest-only execution.
+
+- **Compatibility Surfaces**: Legacy frontend tools and dialect code exist
+  where needed, but new Ascend V2 development should keep Ascend APIs, tools,
+  tests, and docs separated from those compatibility-only entry points.
 
 ## Project Structure
 
@@ -28,21 +46,21 @@ Ascend-MLIR/
 │   └── pyasc/              # PyAsc (ASC-IR) source
 ├── include/               # Header files
 │   ├── Conversion/         # Conversion pass headers
-│   │   └── AFIRToASCIR/    # AFIR to ASC-IR conversion
-│   ├── Dialect/AFIR/       # AFIR dialect definitions
-│   ├── Interface/          # Op interface definitions
-│   └── Utils/              # Utility functions
+│   │   └── Ascend/         # Ascend V2 conversion pipeline
+│   ├── Runtime/            # Runtime artifact and execution interfaces
+│   └── Target/             # Ascend target and CANN kernel interfaces
 ├── lib/                   # Implementation files
-│   ├── Conversion/         # Conversion pass implementations
-│   │   └── AFIRToASCIR/    # AFIR to ASC-IR conversion
-│   │       └── Math/       # Math operator conversions (Elementwise)
-│   ├── Dialect/AFIR/       # AFIR dialect implementations
-│   └── Utils/              # Utility implementations
-├── tools/afir-opt/         # MLIR optimizer tool
+│   ├── Conversion/Ascend/  # Normalize/Kernelize/Schedule/Realize/Translate
+│   ├── Runtime/            # Runtime session implementation
+│   └── Target/CannKernel/  # CANN / AscendC source and artifact emission
+├── tools/ascend-mlir-opt/  # Ascend optimizer tool
+├── tools/ascend-mlir-translate/  # Ascend translation tool
+├── tools/ascend-debug/     # Ascend debug collection and workbench
+├── tools/runtime-session/  # Runtime CLI entry point
 ├── test/                  # Test cases
 │   ├── Conversion/         # Conversion tests
-│   ├── Dialect/           # Dialect tests
-│   └── Interface/         # Interface tests
+│   ├── Target/             # CANN / AscendC translation tests
+│   └── tools/              # Runtime and debug tool tests
 ├── scripts/               # Build and utility scripts
 │   ├── build.sh           # Main build script
 │   ├── build_llvm.sh      # LLVM build script
@@ -144,14 +162,25 @@ cd Ascend-MLIR
 
 ## Usage
 
-### afir-opt Tool
+### Ascend Tools
 
 ```bash
-# Run AFIR optimization passes
-./build/bin/afir-opt --afir-shape-inference input.mlir
+# Run the Ascend V2 pass pipeline on an MLIR module.
+./build/bin/ascend-mlir-opt input.mlir \
+  --ascend-normalize \
+  --ascend-kernelize \
+  --ascend-schedule='target-tile-policy=legacy-default' \
+  --ascend-realize='materialization-mode=memory-space-annotate' \
+  --ascend-compute-lower \
+  --ascend-parallelize \
+  --ascend-prepare-for-emit \
+  --ascend-canonicalize-cann-signature
 
-# Run canonicalization
-./build/bin/afir-opt --afir-canonicalize input.mlir
+# Translate AscendC Kernel MLIR to CANN-standard AscendC source.
+./build/bin/ascend-mlir-translate -mlir-to-cann kernel.mlir
+
+# Collect a one-stop debug workspace with manifests, graphs, source, and reports.
+./build/bin/ascend-debug collect input.mlir --out debug-run --mode deep
 ```
 
 ### Code Formatting
@@ -189,10 +218,24 @@ Note: The `-f` flag enables format mode (modifies files), while without it the s
 
 ```mlir
 // example.mlir
-func.func @example(%arg0: tensor<4x4xf32>, %arg1: tensor<4x4xf32>) -> tensor<4x4xf32> {
-  %0 = afir.add %arg0, %arg1 : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
-  %1 = afir.mul %0, %arg1 : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
-  return %1 : tensor<4x4xf32>
+#identity = affine_map<(d0, d1) -> (d0, d1)>
+
+module {
+  func.func @rank2_elementwise_add(
+      %arg0: tensor<70x128xf16>,
+      %arg1: tensor<70x128xf16>) -> tensor<70x128xf16> {
+    %empty = tensor.empty() : tensor<70x128xf16>
+    %out = linalg.generic {
+      indexing_maps = [#identity, #identity, #identity],
+      iterator_types = ["parallel", "parallel"]
+    } ins(%arg0, %arg1 : tensor<70x128xf16>, tensor<70x128xf16>)
+      outs(%empty : tensor<70x128xf16>) {
+    ^bb0(%x: f16, %y: f16, %o: f16):
+      %v = arith.addf %x, %y : f16
+      linalg.yield %v : f16
+    } -> tensor<70x128xf16>
+    return %out : tensor<70x128xf16>
+  }
 }
 ```
 
@@ -207,8 +250,8 @@ Run the test suite:
 Or using cmake:
 
 ```bash
-cd build
-cmake --build . --target check-afir
+ninja -C build-ascend-check check-ascend-conversion
+/path/to/llvm/build/bin/llvm-lit -v build/test/Target
 ```
 
 ## Test Coverage

@@ -2701,37 +2701,61 @@ static void deduplicateConstantsForEmission(Operation *op) {
       deduplicateConstantsInBlock(block);
 }
 
-static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
-  if (includeMixSupport) {
-    os << "#define __ASCEND_RUNTIME_MIX_KERNEL_FUN_H__\n\n";
-    os << "#define ASCENDC_CUBE_ONLY\n";
-  }
-  os << "#include \"kernel_operator.h\"\n";
-  if (includeMixSupport)
-    os << "#include \"lib/matmul_intf.h\"\n";
-  os << "#include \"utils/std/cmath.h\"\n";
-  // adv_api headers required by BroadcastL2Op and ReduceSum2DL2Op emitters.
-  // These are not included by kernel_operator.h but are available via the
-  // tikcfw/include search path added by the compiler driver.
-  os << "#include \"adv_api/broadcast/broadcast.h\"\n";
-  os << "#include \"adv_api/reduce/reduce.h\"\n";
-  os << "\n";
-  if (includeMixSupport) {
-    os << "using namespace AscendC;\n";
-    os << "using namespace matmul;\n\n";
-    os << "constexpr MatmulConfig ASCEND_BATCH_MATMUL_CFG = "
-          "GetNormalConfig(false, true);\n\n";
-    emitSupportedMixCopyTilingHelper(os);
-  }
+struct AscendApiRequirements {
+  bool includeMixSupport = false;
+  bool needsBroadcastHeader = false;
+  bool needsReduceHeader = false;
+  bool needsGmLoad = false;
+  bool needsGmStore = false;
+  bool needsScalarExp = false;
+  bool needsScalarRsqrt = false;
+};
+
+static void collectAscendApiRequirements(Operation *root,
+                                         AscendApiRequirements &requirements) {
+  root->walk([&](ascendc::BroadcastL2Op) {
+    requirements.needsBroadcastHeader = true;
+  });
+  root->walk([&](ascendc::ReduceSum2DL2Op) {
+    requirements.needsReduceHeader = true;
+  });
+  root->walk([&](emitasc::CallOpaqueOp callOp) {
+    StringRef callee = callOp.getCallee();
+    if (callee.starts_with("ascend_gm_load<"))
+      requirements.needsGmLoad = true;
+    else if (callee.starts_with("ascend_gm_store<"))
+      requirements.needsGmStore = true;
+    else if (callee == "ascendc_api_scalar_exp")
+      requirements.needsScalarExp = true;
+    else if (callee == "ascendc_api_scalar_rsqrt")
+      requirements.needsScalarRsqrt = true;
+  });
+}
+
+static AscendApiRequirements collectAscendApiRequirements(ModuleOp moduleOp) {
+  AscendApiRequirements requirements;
+  requirements.includeMixSupport = moduleHasMixKernel(moduleOp);
+  collectAscendApiRequirements(moduleOp.getOperation(), requirements);
+
+  return requirements;
+}
+
+static void emitAscendApiGmLoad(raw_ostream &os) {
   os << "template <typename T>\n";
   os << "__aicore__ inline T ascend_gm_load(GM_ADDR base, uint64_t offset) {\n";
   os << "  return reinterpret_cast<__gm__ T *>(base)[offset];\n";
   os << "}\n\n";
+}
+
+static void emitAscendApiGmStore(raw_ostream &os) {
   os << "template <typename T>\n";
   os << "__aicore__ inline void ascend_gm_store(GM_ADDR base, uint64_t offset, T value) {\n";
   os << "  reinterpret_cast<__gm__ T *>(base)[offset] = value;\n";
   os << "}\n\n";
-  os << "__aicore__ inline float ascend_scalar_exp(float x) {\n";
+}
+
+static void emitAscendApiScalarExp(raw_ostream &os) {
+  os << "__aicore__ inline float ascendc_api_scalar_exp(float x) {\n";
   os << "  if (x < -20.0f) return 0.0f;\n";
   os << "  if (x > 20.0f) x = 20.0f;\n";
   os << "  constexpr float inv_ln2 = 1.4426950408889634f;\n";
@@ -2750,9 +2774,45 @@ static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
   os << "  }\n";
   os << "  return y;\n";
   os << "}\n\n";
-  os << "__aicore__ inline float ascend_scalar_rsqrt(float x) {\n";
+}
+
+static void emitAscendApiScalarRsqrt(raw_ostream &os) {
+  os << "__aicore__ inline float ascendc_api_scalar_rsqrt(float x) {\n";
   os << "  return 1.0f / AscendC::Std::sqrt(x);\n";
   os << "}\n\n";
+}
+
+static void emitCannKernelPreamble(raw_ostream &os,
+                                   const AscendApiRequirements &requirements) {
+  if (requirements.includeMixSupport) {
+    os << "#define __ASCEND_RUNTIME_MIX_KERNEL_FUN_H__\n\n";
+    os << "#define ASCENDC_CUBE_ONLY\n";
+  }
+  os << "#include \"kernel_operator.h\"\n";
+  if (requirements.includeMixSupport)
+    os << "#include \"lib/matmul_intf.h\"\n";
+  if (requirements.needsScalarRsqrt)
+    os << "#include \"utils/std/cmath.h\"\n";
+  if (requirements.needsBroadcastHeader)
+    os << "#include \"adv_api/broadcast/broadcast.h\"\n";
+  if (requirements.needsReduceHeader)
+    os << "#include \"adv_api/reduce/reduce.h\"\n";
+  os << "\n";
+  if (requirements.includeMixSupport) {
+    os << "using namespace AscendC;\n";
+    os << "using namespace matmul;\n\n";
+    os << "constexpr MatmulConfig ASCEND_BATCH_MATMUL_CFG = "
+          "GetNormalConfig(false, true);\n\n";
+    emitSupportedMixCopyTilingHelper(os);
+  }
+  if (requirements.needsGmLoad)
+    emitAscendApiGmLoad(os);
+  if (requirements.needsGmStore)
+    emitAscendApiGmStore(os);
+  if (requirements.needsScalarExp)
+    emitAscendApiScalarExp(os);
+  if (requirements.needsScalarRsqrt)
+    emitAscendApiScalarRsqrt(os);
 }
 
 } // namespace
@@ -3418,11 +3478,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.replaceOp(op, call.getResult());
   };
   moduleOp->walk([&](math::ExpOp op) {
-    lowerScalarUnaryMath(op, op.getOperand(), op.getType(), "ascend_scalar_exp");
+    lowerScalarUnaryMath(op, op.getOperand(), op.getType(),
+                         "ascendc_api_scalar_exp");
   });
   moduleOp->walk([&](math::RsqrtOp op) {
     lowerScalarUnaryMath(op, op.getOperand(), op.getType(),
-                         "ascend_scalar_rsqrt");
+                         "ascendc_api_scalar_rsqrt");
   });
   eraseDeadCastOps();
 
@@ -4261,6 +4322,9 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   if (!moduleOp)
     return op->emitOpError("expected a module op");
 
+  AscendApiRequirements apiRequirements =
+      collectAscendApiRequirements(moduleOp);
+
   // Replace ops whose PyAsc emitters generate wrong C++ with verbatim before
   // regular PyAsc-backed function emission. Mix kernels are emitted from the
   // partition plan directly, so keep their IR intact for mix analysis.
@@ -4270,11 +4334,12 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     fixBrokenOpEmitters(funcOp);
     deduplicateConstantsForEmission(funcOp);
   }
+  collectAscendApiRequirements(moduleOp.getOperation(), apiRequirements);
 
   CodeEmitter emitter(os);
   CodeEmitter::Scope scope(emitter);
 
-  emitCannKernelPreamble(os, moduleHasMixKernel(moduleOp));
+  emitCannKernelPreamble(os, apiRequirements);
 
   // First pass: emit TilingData struct declarations from aicore funcs.
   llvm::StringMap<std::string> emittedStructSignatures;

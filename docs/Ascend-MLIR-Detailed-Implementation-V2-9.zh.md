@@ -9,7 +9,7 @@
 
 ### 9.1 当前原型流水线（V1 路径）
 
-> **工具说明**：本节命令行中出现的 `afir-opt` 是原型阶段兼容 driver，功能等价于 MLIR 社区的 `mlir-opt`。`ascend-mlir-translate` 是 V2 的 Ascend 命名翻译 driver，用于 `-mlir-to-cann`、Artifact Manifest 和 Host Tiling ABI 生成。旧 `afir-translate` 可以继续保留用于兼容和回归，但 Ascend 工具链、Artifact Manifest、Host Tiling ABI 和业务能力不得依赖 AFIR 方言或 `afir-translate`。
+> **工具说明**：本节命令行统一使用 Ascend 命名 driver。`ascend-mlir-opt` 承载优化与转换 pass，`ascend-mlir-translate` 承载 `-mlir-to-cann`、Artifact Manifest 和 Host Tiling ABI 生成。Ascend 工具链、Artifact Manifest、Host Tiling ABI 和业务能力不得依赖历史前端兼容工具或旧前端方言。
 
 当前原型阶段，Layers 1–3（Normalize / Kernelize / Schedule）尚未实现为自动化 Pass，由手写 Transform 脚本和人工挑选的融合策略代替。完整 Pass 序列如下。
 
@@ -19,42 +19,42 @@
 
 ```
 # 阶段 1：融合（由 linalg 社区 Pass 完成）
-afir-opt --linalg-fuse-elementwise-ops \
+ascend-mlir-opt --linalg-fuse-elementwise-ops \
          INPUT.mlir -o step1_fused.mlir
 
 # 阶段 2：Tiling（由手写 Transform 脚本驱动）
-afir-opt --transform-interpreter \
+ascend-mlir-opt --transform-interpreter \
          --canonicalize --cse \
          step2_transform.mlir -o step2_tiled.mlir
 
 # 阶段 3：Bufferize（Layer 4 前置，社区 Pass）
-afir-opt '--one-shot-bufferize=bufferize-function-boundaries=true \
+ascend-mlir-opt '--one-shot-bufferize=bufferize-function-boundaries=true \
           allow-return-allocs-from-loops=true \
           function-boundary-type-conversion=identity-layout-map' \
          --cse \
          step2_tiled.mlir -o step3_bufferized.mlir
 
 # 阶段 4：Buffer Placement（Layer 4 实现）
-afir-opt --ascendc-buffer-placement \
+ascend-mlir-opt --ascendc-buffer-placement \
          step3_bufferized.mlir -o step4_buffer_placement.mlir
 
 # 阶段 5：Compute Lowering（Layer 5 实现）
-afir-opt --linalg-to-ascendc \
+ascend-mlir-opt --linalg-to-ascendc \
          --canonicalize --cse \
          step4_buffer_placement.mlir -o step5_ascendc.mlir
 
 # 阶段 6：多核调度（Layer 5 实现）
-afir-opt --ascendc-parallelize \
+ascend-mlir-opt --ascendc-parallelize \
          --canonicalize --cse \
          step5_ascendc.mlir -o step6_parallelize.mlir
 
 # 阶段 7：Emit 前处理（Layer 5 实现）
-afir-opt --ascendc-prepare-for-emit \
+ascend-mlir-opt --ascendc-prepare-for-emit \
          --canonicalize --cse \
          step6_parallelize.mlir -o step7_kernel.mlir
 
 # 阶段 7b：规范化 CANN Signature（Layer 5 实现）
-afir-opt --canonicalize-cann-signature \
+ascend-mlir-opt --canonicalize-cann-signature \
          step7_kernel.mlir -o step7_cann.mlir
 
 # 阶段 8：Codegen（Layer 5 实现）
@@ -67,7 +67,7 @@ ascend-mlir-translate -mlir-to-cann \
 适用于：matmul-add-leakyrelu、gemm 系列 kernel。在阶段 3 增加以下两个标注 Pass：
 
 ```
-afir-opt '--one-shot-bufferize=...' \
+ascend-mlir-opt '--one-shot-bufferize=...' \
          --annotate-ascendc-kernel-kind \
          --annotate-mix-matmul-semantics \
          --cse \
@@ -90,7 +90,7 @@ mix-compiler \
 适用于：gather-elementwise-fusion 示例。在阶段 1 前增加结构化标记：
 
 ```
-afir-opt --mark-structured-ops \
+ascend-mlir-opt --mark-structured-ops \
          --fuse-gather-elementwise \
          INPUT.mlir -o step1_gather_fused.mlir
 ```

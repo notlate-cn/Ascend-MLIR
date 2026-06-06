@@ -62,7 +62,7 @@
 | Target-driven tile | Tile selection consumes target memory / intrinsic / cost model | `--ascend-schedule='target-tile-policy=target-aware ...'` loads CANN target profile, verifies memory / intrinsic / cost models, and derives tile size from UB capacity plus data-movement path cost availability；tail-policy preference 与 vector buffer count 已进入 `TargetTilePolicy`，`ScheduleDecision` 读取策略对象而不是静态优先序；静态可估 footprint 的 kernel 按 UB 容量推导 tile，dynamic inner / dynamic reduction footprint 保守落到后端已验证的默认 tile，并用 `target_dynamic_*_32` policy id 显式标记；stock `--ascend-schedule` 默认改为 `require-explicit`，兼容调用必须显式写 `target-tile-policy=legacy-default`，商用调用必须显式写 `target-aware`；ScheduleSearch 已生成 role-driven、result、half/split、axis-product 与 coalescing-hint 候选，并通过 cost ranking 保持 bounded tile 优先；module-level `ascend.schedule.tuning_cache`、`tuning-cache-in/out` line-based 文件 cache 与 `tuning-db-in/out` schema-versioned tuning DB 已支持跨编译进程复用 selected tuning signatures；主线 examples 通过 `examples/mainline-target-env.sh` 统一显式选择 `target-aware` | `MVP Closed` | 后续让 tuning DB 承接实测 score / negative records 的完整 auto-tuning 数据 |
 | Multi-kernel manifest | Artifact manifest can describe multiple kernel entries | Artifact manifest preserves legacy single-kernel root fields and emits explicit multi-kernel `kernel_entries` plus `kernelGraph.nodes/edges`；Kernelize 已从最终 kernel partition 生成 `ascend.kernel_graph.edges`，manifest 不再依赖手写 module attrs；`--ascend-kernel-split` 会把同一 `func.func` 内按 `ascend.kernel` 标注的 logical kernels 拆成独立 `func.func @kernel_N`，并把 cross-kernel carried buffers 转为函数 ABI；translator 已优先消费 `ascend.schedule.kernel_metadata` per-kernel schedule schema，并把内部 kernel id 映射为最终 CANN entry id，同一 entry 内部边会被丢弃，避免 `kernel_1` 这类 partition id 泄漏到 manifest；per-kernel 与 root schema 已补充 `shape`、`workspace`、`resources` 字段；Realize 会把静态 workspace bytes 写入 `cann.workspace_size_bytes`，动态 workspace 表达式写入 `cann.workspace_size_expr`，CANN tiling space、artifact manifest、host tiling helper 统一消费同一 ABI 信息；host tiling 已支持 multi-kernel module，为每个 global kernel 发射独立 `_GetTilingSize` / `_GetTiling` / `_GetBlockDim` / `_GetWorkspaceSize` helper | `Closed` | 后续把 tiling-space JSON / runtime-session run manifest 生成升级为 manifest-driven per-kernel 消费，而不是只服务单 primary kernel |
 | Transformer dynamic | Full transformer graph compiles through new mainline and has an explicit pre-commercial runtime E2E gate | `examples/transformer/run-mainline.sh` proves Normalize + Kernelize prefix, verifies rank-agnostic transpose Kernelize, inserts `--ascend-kernel-split`, and passes full codegen / Phase5 backend / translate / runtime artifact smoke；当前主线 smoke guard 明确检查 `phase5_cann.mlir`、C++ `__aicore__` kernel 与 runtime artifact 的多 kernel 形态，默认形状产出 53 个 CANN kernel / 53 个 host tiling helper / 53 个 manifest kernel entry，manifest 保留 DAG carried-buffer edges；`--runtime-e2e` mode generates deterministic inputs, complete output ABI bindings and a runtime-session run manifest；artifact manifest 已补充 per-kernel ABI 元数据与 `kernelKind`，runtime-session 支持 `input_alias` 输出语义，并按 mix artifact ABI 名称过滤 conservative run-manifest inputs；transformer artifact 编译会按 manifest 选择 vec/cube/mix 而不再硬编码 vec；CANN artifact compile blockers 已用通用能力关闭：GlobalTensor->GlobalTensor `DataCopy` scalar GM fallback、GM-backed memref view `afir_gm_load/store` lowering、`SetGlobalBuffer` ptr-offset rewrite、f64->f32 常量折叠、scalar `math.exp/rsqrt` fallback helper、non-f16 CO1->VECIN scalar copy、TBuf-backed LocalTensor queue round-trip bypass；multi-func translator 已按每个 global func 的 `ascendc.kernel_kind` 分派 mix emission，非 primary mix 不再落回普通 CANN printer；fragment ladder 已关闭 `attn_softmax`、`attn_context` 与 composed `attention_block` runtime-session validation；full transformer `--runtime-e2e --log` 已完成 53 个 artifact 编译、53-task DAG runtime-session sim、并发 scheduler 执行和最终 numeric validation | `Runtime E2E Closed` | 下一步把 shape matrix 固化为 baseline gate，推进 real NPU smoke 和商用前 performance / stability baseline |
-| Cross-stage contract hardening | 上层主干不应靠裸字符串 / 重复 enum / 隐式 dialect 注册扩展 | `ascendc.unit`、`AiCore.*`、`ascendc.kernel_kind`、op-role、gather attrs 已集中到 `Common/Attributes.h`；Realize `MemoryPlace` 与 Backend `MemorySpace` 均已统一 alias 到 target profile 枚举；Normalize / Kernelize / Schedule / Realize 已补齐 dependent dialects；Kernelize 已新增 public `KernelizeOpInterface` 语义契约与 public `KernelizeOpModelRegistry`，linalg / tensor-view / arith-constant 语义 helper 已抽到共享实现，默认 registry 只作为 fallback；generated `KernelizeSemanticOpInterface` 已有真实 external model registration，`afir-opt` 对 linalg/tensor/arith 优先走 external model，AFIR 自有 op 可通过 MLIR native interface 提供 semantics；`DependencyAnalysis` 消费 `Analyze` / `Transparent` / `Unsupported` participation，不再靠私有 target-op 匹配，unsupported tensor producer 已 fail-closed 并给出 producer/consumer diagnostic；native / external model populate failure 也在 `DependencyAnalysis` 入口 fail-closed，避免失败 interface op 从 producer graph 静默消失；Kernelize access pattern 不再按 `linalg.matmul` / `batch_matmul` / `transpose` / `fill` 名字分支，generic contraction 由 indexing maps + iterator kinds 识别；Kernelize iterator type 分析改为 `IteratorKind` enum，不再对 attr printed form 做字符串 contains；Kernelize fallback、Schedule pattern view、Realize memory-space annotate / Phase5 unit annotation 已优先消费 `ascend.op_roles` array 再兼容 legacy `ascend.op_role`；`KernelizeConfig` 已删除未消费的 `maxBranchesPerCandidate` / `localTopKPerPrimaryOpNeighborhood` / `maxPrimitivePerOp` 假配置；Fusion primitive 名称已从裸字符串收敛为 `KernelizePrimitiveKind` enum；`KernelPatternEdgeKind::MustCoLocate` / `MustSeparate` 已进入 partition 决策；`ascend.kernelize.handwritten_group`、`ascend.kernelize.handwritten_kind`、`ascend.kernelize.template_families` 与自动 SDPA-like matcher 已可注入 `HandwrittenPattern` 候选，由 closure / contract / partition / Schedule template 主链路统一校验；Phase5 body classifier 已收敛为 `Backend/LinalgBodyClassifier` 单一来源，Realize 与 ComputeLower 共用；Schedule gather semantic alignment 已由 target-aware `AlignmentRule` 覆写；Kernelize branch/merge group 已沿允许的链传播到中间结构节点；Schedule `Memory` role 已有 `memory_copy` 模板与 full-axis tile 兜底 | `P0 Slice Closed` | 后续把更多 AFIR 自有 op 迁移到 native interface，逐步减少 fallback registry 体量 |
+| Cross-stage contract hardening | 上层主干不应靠裸字符串 / 重复 enum / 隐式 dialect 注册扩展 | `ascendc.unit`、`AiCore.*`、`ascendc.kernel_kind`、op-role、gather attrs 已集中到 `Common/Attributes.h`；Realize `MemoryPlace` 与 Backend `MemorySpace` 均已统一 alias 到 target profile 枚举；Normalize / Kernelize / Schedule / Realize 已补齐 dependent dialects；Kernelize 已新增 public `KernelizeOpInterface` 语义契约与 public `KernelizeOpModelRegistry`，linalg / tensor-view / arith-constant 语义 helper 已抽到共享实现，默认 registry 只作为 fallback；generated `KernelizeSemanticOpInterface` 已有真实 external model registration，`ascend-mlir-opt` 对 linalg/tensor/arith 优先走 external model，历史前端自有 op 可通过 MLIR native interface 提供 semantics；`DependencyAnalysis` 消费 `Analyze` / `Transparent` / `Unsupported` participation，不再靠私有 target-op 匹配，unsupported tensor producer 已 fail-closed 并给出 producer/consumer diagnostic；native / external model populate failure 也在 `DependencyAnalysis` 入口 fail-closed，避免失败 interface op 从 producer graph 静默消失；Kernelize access pattern 不再按 `linalg.matmul` / `batch_matmul` / `transpose` / `fill` 名字分支，generic contraction 由 indexing maps + iterator kinds 识别；Kernelize iterator type 分析改为 `IteratorKind` enum，不再对 attr printed form 做字符串 contains；Kernelize fallback、Schedule pattern view、Realize memory-space annotate / Phase5 unit annotation 已优先消费 `ascend.op_roles` array 再兼容 legacy `ascend.op_role`；`KernelizeConfig` 已删除未消费的 `maxBranchesPerCandidate` / `localTopKPerPrimaryOpNeighborhood` / `maxPrimitivePerOp` 假配置；Fusion primitive 名称已从裸字符串收敛为 `KernelizePrimitiveKind` enum；`KernelPatternEdgeKind::MustCoLocate` / `MustSeparate` 已进入 partition 决策；`ascend.kernelize.handwritten_group`、`ascend.kernelize.handwritten_kind`、`ascend.kernelize.template_families` 与自动 SDPA-like matcher 已可注入 `HandwrittenPattern` 候选，由 closure / contract / partition / Schedule template 主链路统一校验；Phase5 body classifier 已收敛为 `Backend/LinalgBodyClassifier` 单一来源，Realize 与 ComputeLower 共用；Schedule gather semantic alignment 已由 target-aware `AlignmentRule` 覆写；Kernelize branch/merge group 已沿允许的链传播到中间结构节点；Schedule `Memory` role 已有 `memory_copy` 模板与 full-axis tile 兜底 | `P0 Slice Closed` | 后续把更多 历史前端自有 op 迁移到 native interface，逐步减少 fallback registry 体量 |
 | Kernelize template family merge | primitive merge 不应依赖 `(lhs,rhs)` 有序对，`vector+cube` 与 `cube+vector` 等组合必须对称解析 | `CandidateMergeAnalysis` 的 table-family 解析已迁入 `KernelizeFamilyResolver`；candidate 构造优先消费 `preferredTemplateFamilies` trait，再回退 role-derived families；解析器保留 `vector+reduction -> reduction`、`cube+vector -> cube`、同 family intersection 优先级，并输出 `family_resolver = "kernelize_trait_resolver"` report；reverse vector->cube 回归已覆盖 | `Closed` | 后续让更多 primitive/family 由 op interface 或 backend trait 提供 |
 | Kernelize reduction fusion closure | 非种子 reduction 应能被融合进父 vector kernel，长链 merge 应迭代收敛，horizontal dependency 应沿分析图而非 raw SSA | reduction role 不再无条件标记 `Primary`；`KernelizeSeedPolicy` 显式表达 `MaySeed` / `NonSeedWhenFused` / `NeverSeed`，linalg reduction 默认 `NonSeedWhenFused` 并进入 `DependencyAnalysis` report；`ConsumerIntoPrimary` 按 seed policy 而非 role-only heuristic 选择 vector consumer 作为 primary，softmax-like row reduction 可进入 vector kernel；`CandidateMergeAnalyzer` 改为 fixed-point 合并，3+ 长链可继续喂回；horizontal reachability 改为消费 `DependencyAnalysisResult.index.consumers`，并要求 sibling primary result shape 兼容，避免仅因共享常量把不同 shape 的 fill 合成一个 kernel；DependencyAnalysis 只沿 tensor-typed operands 追溯无 region 中间 op，支持 tensor view 链同时避免把 `tensor.empty(%dim)` shape 依赖误当 data dependency；AxisCoalescer 的 axis carrier 与 primary output carrier 解耦，非 primary reduction 仍可承载 fused reduction+vector epilogue 的 reduction axes | `Closed` | 后续按 op/interface 细化 seed policy，而不是恢复 role-only 判断 |
 | Realize plan / IR mutation | `MemoryRealizationPlan` 必须由 materialize 层驱动真实 IR mutation 与计数回写 | `MemoryRealizationDriver::materialize(module, bundles, MemorySpaceAnnotate)` 已统一执行 plan 校验、memory-space annotation、Phase5 bridge 和 per-kernel alloc/copy 计数回写；`RealizePass` 不再直接绕过 driver 调用 annotate / bridge helpers；`BufferizationDriver` 已按 `ascend.op_roles` array 识别 vector temporary，并把 `tensor.extract_slice` / `tensor.cast` / `tensor.expand_shape` / `tensor.collapse_shape` / `tensor.reshape` 作为透明 tensor view 追溯 producer/consumer 关系；target-aware workspace slot 落到 `VECIN`，生产 plan 可选择 `GM -> VECIN` direct path，不再生成不可达 `GM -> VECCALC` movement；Phase5 concat/subview output bridge 已增加 dim-use preflight，失败路径不再留下半插入 `VECOUT` alloc；cube->vector bridge 使用 dominance 判定安全 consumer，并通过 `LinalgBodyClassifier` 支持 `linalg.matmul` / `linalg.batch_matmul`；selected value-level movement step 已在同一入口物化为 local alloc/copy，静态同形同 block 输入可合并到 workspace base + rank-reduced subview；跨形状 selected movement 已用 flat workspace + `memref.reinterpret_cast` view 打包；consumer 是 `memref.subview` / `memref.cast` / `memref.expand_shape` / `memref.collapse_shape` / `memref.reshape` view-chain 时会在目标 memory space 上重建 view 后改写 linalg input；dynamic subview / reshape 链按实际 rewrite 数更新 `dynamic_view_chain_rewrites` report；movement view-chain 物化前已增加 group/item preflight，无法重建的 dynamic view-chain 会计入 `deferred_view_chain_rewrites` 并避免半改 IR；StaticMemoryPlanner 已复用非重叠 vector temporary 的物理 slot offset并回写真实 peak/workspace bytes | `MVP Closed` | 后续补 region 跨 block / 更多 view-like op 的 selected movement materialization |
@@ -86,7 +86,7 @@
 | Kernelize reduction seed policy | `Done` | `KernelizeSeedPolicy` 将 reduction seed 行为显式化；linalg reduction 默认 `NonSeedWhenFused`，`DependencyAnalysis` report 输出 `seed_policy`，`ConsumerIntoPrimary` 按 seed policy 融合 reduction->vector，而不是继续依赖 role-only heuristic | `ascend-kernelize-reduction-seed-policy.mlir`；`ascend-kernelize-reduction-fusion.mlir`；`AscendKernelizeOpInterfaceTest` |
 | Kernelize primitive / family trait resolver | `Done` | `KernelizeFamilyResolver` 统一解析 template families；candidate 构造优先消费 `preferredTemplateFamilies`，再回退 role-derived families；merge report 输出 `family_resolver`；handwritten / must-colocate / must-separate attrs 集中到 `Common/Attributes.h` | `ascend-kernelize-template-family-traits.mlir`；`ascend-kernelize-merge-horizontal.mlir`；`AscendKernelPatternTest` |
 | Schedule persistent tuning cache IO | `Done` | `--ascend-schedule` 保留 `tuning-cache-in` / `tuning-cache-out` line-based 兼容路径，并新增 `tuning-db-in` / `tuning-db-out` schema-versioned tuning DB；DB record 带 `schema=1`、target、policy、signature、family、template、result/tile shape，按 target/policy 过滤后 seed `ScheduleCacheModel`，输出稳定排序 | `ascend-schedule-persistent-cache.mlir`；`ascend-schedule-cache.mlir`；`ascend-schedule-tuning-db.mlir`；`ascend-schedule-tuning-db-invalid.mlir` |
-| KernelizeOpInterface / trait model | `Done` | public `KernelizeOpSemanticInfo` contract added；linalg / tensor view / arith constant semantic helpers 已抽到共享实现；`KernelizeOpModelRegistry` 先查 native/external `KernelizeSemanticOpInterface`，再走 fallback registry；`registerKernelizeExternalModels` 已真实 attach linalg/tensor/arith external models，`afir-opt` 默认注册；`DependencyAnalysis` consumes participation (`Analyze` / `Transparent` / `Unsupported`) instead of private target-op matching；unsupported tensor producers now fail closed with producer/consumer diagnostic；generated `KernelizeSemanticOpInterface` 支持 AFIR-owned ops 通过 MLIR native interface 提供 semantics，registry fallback 保持兼容 | `ascend-kernelize-op-interface-*.mlir`；`ascend-kernelize-op-interface-native.mlir`；`AscendKernelizeOpInterfaceTest` |
+| KernelizeOpInterface / trait model | `Done` | public `KernelizeOpSemanticInfo` contract added；linalg / tensor view / arith constant semantic helpers 已抽到共享实现；`KernelizeOpModelRegistry` 先查 native/external `KernelizeSemanticOpInterface`，再走 fallback registry；`registerKernelizeExternalModels` 已真实 attach linalg/tensor/arith external models，`ascend-mlir-opt` 默认注册；`DependencyAnalysis` consumes participation (`Analyze` / `Transparent` / `Unsupported`) instead of private target-op matching；unsupported tensor producers now fail closed with producer/consumer diagnostic；generated `KernelizeSemanticOpInterface` 支持 legacy-frontend-owned ops 通过 MLIR native interface 提供 semantics，registry fallback 保持兼容 | `ascend-kernelize-op-interface-*.mlir`；`ascend-kernelize-op-interface-native.mlir`；`AscendKernelizeOpInterfaceTest` |
 | HandwrittenPattern 注入器 | `Done` | `ascend.kernelize.handwritten_group` 和自动 SDPA-like matcher 生成 `HandwrittenPattern` candidate，统一走 closure / contract / partition；matcher fail-closed 到 seed cube -> reduction -> vector chain -> second cube，避免误收 MLP 双 matmul；SDPA-like matcher 写入 `handwritten_kind = attention_sdpa` 与 `template_families = [attention_sdpa, cube]`，Schedule 选择 `attention_sdpa/grouped_tile_per_block`，attention-like supported-body smoke 可通过 ComputeLower 且不残留 `linalg.`；真实 softmax `subf/exp/div` 已先通过 fragment ladder 的通用 GM scalar/reduction + vector path 完成 runtime-session validation，FlashAttention 专用 lowering 仍不在当前批次 | `ascend-kernelize-handwritten-pattern.mlir`；`ascend-kernelize-attention-handwritten-pattern.mlir`；`ascend-schedule-attention-handwritten-pattern.mlir`；`ascend-full-pipeline-attention-handwritten-smoke.mlir`；`transformer-fragments.mlir` |
 | 文档收敛 | `Done` | 本节与 Gap Board 更新，记录本批次边界和验证项 | 本文档 |
 
@@ -94,14 +94,14 @@
 
 - Realize selected movement 已支持跨形状 flat workspace packing 与 `memref.subview` / `memref.cast` / `memref.expand_shape` / `memref.collapse_shape` / `memref.reshape` consumer view-chain 重写；dynamic view-chain 当前覆盖 dynamic subview / reshape，region 跨 block 与更多 view-like op 仍是后续增强。
 - Schedule 已有 module-level tuning signature 复用和 line-based file cache；完整 auto-tuning result database / cost-history schema 仍是后续增强。
-- Public semantic contract、registry fallback、generated TableGen OpInterface 与 external model registration hook 已完成；后续按 AFIR 自有 op 增量接入具体 external/native models。
+- Public semantic contract、registry fallback、generated TableGen OpInterface 与 external model registration hook 已完成；后续按 历史前端自有 op 增量接入具体 external/native models。
 - HandwrittenPattern 已有 fail-closed SDPA-like 自动 matcher；FlashAttention 专用 schedule/lowering 不在本批次。
 
 ## Phase 0：V2 MVP 编译主干
 
 | 任务 | 对应规格 | 状态 | 主要产物 | 验证 |
 |---|---|---|---|---|
-| V2 pass skeleton | V2-1 / V2-9 | `Done` | `--ascend-normalize`、`--ascend-kernelize`、`--ascend-schedule` | `check-afir` 覆盖 |
+| V2 pass skeleton | V2-1 / V2-9 | `Done` | `--ascend-normalize`、`--ascend-kernelize`、`--ascend-schedule` | `check-ascend-conversion` 覆盖 |
 | Target Profile MVP | V2-8 | `Done` | `TargetProfile`、`CannTargetProfileLoader`、`--ascend-print-target-profile` | `test/Target/ascend-target-profile.mlir` |
 | Normalize MVP | V2-2 | `Done` | dialect 白名单、`cf.assert` shape-guard op 级例外、`ascend.normalized` | `test/Conversion/ascend-normalize.mlir` |
 | Kernelize MVP | V2-3 | `Done` | `ascend.op_role`、`ascend.kernel`、`ascend.primary` | `test/Conversion/ascend-kernelize-mvp.mlir` |
@@ -122,9 +122,9 @@
 ```bash
 cmake -S . -B build-v2-verify -G Ninja \
   -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build \
-  -DAFIR_ENABLE_BINDING_PYTHON=false
+  -DLEGACY_FRONTEND_BINDINGS=false
 
-cmake --build build-v2-verify --target afir-opt -j10
+cmake --build build-v2-verify --target ascend-mlir-opt -j10
 
 /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v \
   build-v2-verify/test/Conversion/ascend-normalize.mlir \
@@ -136,17 +136,17 @@ ASCEND_TOOLKIT_HOME=/home/niu/Ascend/20260323_newest/cann \
 /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v \
   build-v2-verify/test/Target/ascend-target-profile.mlir
 
-cmake --build build-v2-verify --target check-afir -j10
+cmake --build build-v2-verify --target check-ascend-conversion -j10
 ```
 
 结果：
 
 | 命令 | 结果 |
 |---|---|
-| `afir-opt` build | passed |
+| `ascend-mlir-opt` build | passed |
 | V2 focused lit | 4/4 passed |
 | target profile lit | 1/1 passed |
-| `check-afir` | 30 discovered, 27 passed, 3 unsupported |
+| `check-ascend-conversion` | 30 discovered, 27 passed, 3 unsupported |
 
 ## Phase 1：Kernelize 完整候选分析
 
@@ -174,7 +174,7 @@ cmake --build build-v2-verify --target check-afir -j10
 
 | 计划任务 | 状态 | 提交 | 验证 |
 |---|---|---|---|
-| Task 1: Shared Kernelize Data Model | `Done` | `bb7a9c0` | `git diff --check` passed；xvm `afir-opt` build passed；`ascend-kernelize-mvp.mlir` 1/1 passed |
+| Task 1: Shared Kernelize Data Model | `Done` | `bb7a9c0` | `git diff --check` passed；xvm `ascend-mlir-opt` build passed；`ascend-kernelize-mvp.mlir` 1/1 passed |
 | Task 2: Dependency Analysis and Semantic Summary | `Done` | `8fea70c` / `25ac438` / `762162c` / `b03c8d1` | `git diff --check` passed；xvm `ascend-kernelize-dependency.mlir` 与 `ascend-kernelize-mvp.mlir` 2/2 passed |
 | Task 3: Structural Marking | `Done` | `18e0a2d` / `1fb4c2b` | `git diff --check` passed；xvm `ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir` 3/3 passed |
 | Task 4: Full OpRole Classification | `Done` | `af8a78d` / `61b63d6` | `git diff --check` passed；xvm `ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir`、`ascend-v2-pipeline-mvp.mlir` 4/4 passed |
@@ -197,9 +197,9 @@ cmake --build build-v2-verify --target check-afir -j10
 ```bash
 git diff --check
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-kernelize-dependency.mlir build-v2-verify/test/Conversion/ascend-kernelize-roles.mlir build-v2-verify/test/Conversion/ascend-kernelize-candidates.mlir build-v2-verify/test/Conversion/ascend-kernelize-merge-horizontal.mlir build-v2-verify/test/Conversion/ascend-kernelize-patterns.mlir build-v2-verify/test/Conversion/ascend-kernelize-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-kernelize-dependency.mlir build-v2-verify/test/Conversion/ascend-kernelize-roles.mlir build-v2-verify/test/Conversion/ascend-kernelize-candidates.mlir build-v2-verify/test/Conversion/ascend-kernelize-merge-horizontal.mlir build-v2-verify/test/Conversion/ascend-kernelize-patterns.mlir build-v2-verify/test/Conversion/ascend-kernelize-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -207,8 +207,8 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | 命令 | 结果 |
 |---|---|
 | `git diff --check` | passed |
-| `afir-opt` build + Phase 1 focused lit | 7 discovered, 7 passed |
-| `check-afir` | 35 discovered, 32 passed, 3 unsupported |
+| `ascend-mlir-opt` build + Phase 1 focused lit | 7 discovered, 7 passed |
+| `check-ascend-conversion` | 35 discovered, 32 passed, 3 unsupported |
 
 提交范围：
 
@@ -240,16 +240,16 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | 计划任务 | 状态 | 提交 | 验证 |
 |---|---|---|---|
 | Task 0: Schedule full search 计划 | `Done` | `047d04f` | 计划覆盖开发、spec review、code review、xvm/docker 验证、跟踪更新 |
-| Task 1: Shared Schedule Types and KernelPatternView | `Done` | `df41143` | `git diff --check` passed；spec review passed；code quality review approved；xvm `afir-opt` build passed；focused lit 3/3 passed；`check-afir` 36 discovered, 33 passed, 3 unsupported |
-| Task 2: AxisCoalescer MVP | `Done` | `0d0d058` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm `afir-opt` build passed；focused lit 4/4 passed；`check-afir` 37 discovered, 34 passed, 3 unsupported |
-| Task 3: ScheduleProblemBuilder MVP | `Done` | `3d7ba87` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm `afir-opt` build passed；focused lit 5/5 passed；`check-afir` 38 discovered, 35 passed, 3 unsupported |
-| Task 4: TemplateRegistry MVP | `Done` | `36d0d34` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 6/6 passed；`check-afir` 39 discovered, 36 passed, 3 unsupported |
-| Task 5: ScheduleSearch And compileTimeTopK | `Done` | `c0a0dae` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 7/7 passed；`check-afir` 40 discovered, 37 passed, 3 unsupported |
-| Task 6: Guard Generation And Guard Budget | `Done` | `37226a3` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 8/8 passed；`check-afir` 41 discovered, 38 passed, 3 unsupported |
-| Task 7: ScheduleDecisionSet Builder | `Done` | `7cf1348` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 9/9 passed；`check-afir` 42 discovered, 39 passed, 3 unsupported |
-| Task 8: Schedule Cache Model | `Done` | `20c5a45` | spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 10/10 passed；`check-afir` 43 discovered, 40 passed, 3 unsupported |
-| Task 9: StructuredLoweringDriver MVP | `Done` | `a1ae3be` | TDD RED/GREEN completed；spec review passed；code quality re-review approved；xvm clean `afir-opt` build passed；focused lit 11/11 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
-| Task 10: Full Phase 2 Verification, Review, And Tracking | `Done` | 本文档提交 | final spec review approved；final code/test review approved；schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
+| Task 1: Shared Schedule Types and KernelPatternView | `Done` | `df41143` | `git diff --check` passed；spec review passed；code quality review approved；xvm `ascend-mlir-opt` build passed；focused lit 3/3 passed；`check-ascend-conversion` 36 discovered, 33 passed, 3 unsupported |
+| Task 2: AxisCoalescer MVP | `Done` | `0d0d058` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm `ascend-mlir-opt` build passed；focused lit 4/4 passed；`check-ascend-conversion` 37 discovered, 34 passed, 3 unsupported |
+| Task 3: ScheduleProblemBuilder MVP | `Done` | `3d7ba87` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm `ascend-mlir-opt` build passed；focused lit 5/5 passed；`check-ascend-conversion` 38 discovered, 35 passed, 3 unsupported |
+| Task 4: TemplateRegistry MVP | `Done` | `36d0d34` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `ascend-mlir-opt` build passed；focused lit 6/6 passed；`check-ascend-conversion` 39 discovered, 36 passed, 3 unsupported |
+| Task 5: ScheduleSearch And compileTimeTopK | `Done` | `c0a0dae` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `ascend-mlir-opt` build passed；focused lit 7/7 passed；`check-ascend-conversion` 40 discovered, 37 passed, 3 unsupported |
+| Task 6: Guard Generation And Guard Budget | `Done` | `37226a3` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `ascend-mlir-opt` build passed；focused lit 8/8 passed；`check-ascend-conversion` 41 discovered, 38 passed, 3 unsupported |
+| Task 7: ScheduleDecisionSet Builder | `Done` | `7cf1348` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `ascend-mlir-opt` build passed；focused lit 9/9 passed；`check-ascend-conversion` 42 discovered, 39 passed, 3 unsupported |
+| Task 8: Schedule Cache Model | `Done` | `20c5a45` | spec review passed；code quality review approved；xvm clean `ascend-mlir-opt` build passed；focused lit 10/10 passed；`check-ascend-conversion` 43 discovered, 40 passed, 3 unsupported |
+| Task 9: StructuredLoweringDriver MVP | `Done` | `a1ae3be` | TDD RED/GREEN completed；spec review passed；code quality re-review approved；xvm clean `ascend-mlir-opt` build passed；focused lit 11/11 passed；`check-ascend-conversion` 44 discovered, 41 passed, 3 unsupported |
+| Task 10: Full Phase 2 Verification, Review, And Tracking | `Done` | 本文档提交 | final spec review approved；final code/test review approved；schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-ascend-conversion` 44 discovered, 41 passed, 3 unsupported |
 
 ### Phase 2 Expert Review Follow-up
 
@@ -257,7 +257,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 |---|---|---|---|
 | `KernelPattern` edge dedup key | `Done` | 移除重叠 bit-pack，改为 `KernelPatternEdgeKey` + `DenseSet` | 新增 C++ 单测覆盖旧碰撞样例；xvm `AscendKernelPatternTest` passed |
 | `runtimeTopK` hardcode | `Done` | 新增 `--runtime-top-k`，接入 `ScheduleSearchOptions`，非空 decision set clamp 到 `[1, decisions.size()]` | lit 覆盖默认、`runtime-top-k=2`、`runtime-top-k=0`；focused lit passed |
-| `AxisCoalescer` broadcast dead branch | `Done` | 删除不会命中的 `AxisKind::Broadcast` switch 分支，保留 `broadcastAxisMask` 处理 | `afir-opt` focused build/lit passed |
+| `AxisCoalescer` broadcast dead branch | `Done` | 删除不会命中的 `AxisKind::Broadcast` switch 分支，保留 `broadcastAxisMask` 处理 | `ascend-mlir-opt` focused build/lit passed |
 | `resolveTableFamily` asymmetric table | `Deferred` | 当前实现按 producer -> consumer 方向使用 MVP 表，不属于本轮 bugfix | 后续复合候选能力扩展时再处理 |
 | `SubsumedCandidate` size equality | `No Action` | review 判定为误报：当前判断基于 union size，不会把等长不相交集合误判为包含 | 无代码改动 |
 | CMake dialect deps | `No Action` | 当前直接使用的 func/linalg deps 已在 `AscendConversion` 中链接，无新增 arith/tensor/math C++ symbol 证据 | 无代码改动 |
@@ -268,8 +268,8 @@ Review / verification:
 |---|---|
 | `git diff --check` | passed |
 | TDD RED: `ascend-schedule-decision-set.mlir` 增加 `runtime-top-k=0` 期望 | failed as expected：旧实现输出 `runtime_top_k = 0` |
-| xvm focused build/test | `ninja -C build afir-opt AscendKernelPatternTest` passed；`AscendKernelPatternTest` 1/1 passed；`ascend-schedule-decision-set.mlir` 1/1 passed；`ctest -R AscendKernelPatternTest` passed |
-| xvm `check-afir` | 45 discovered, 44 passed, 1 failed：`tools/examples/example-pipelines.mlir` 缺少既有 example `run_manifest.json`，与本轮改动无关 |
+| xvm focused build/test | `ninja -C build ascend-mlir-opt AscendKernelPatternTest` passed；`AscendKernelPatternTest` 1/1 passed；`ascend-schedule-decision-set.mlir` 1/1 passed；`ctest -R AscendKernelPatternTest` passed |
+| xvm `check-ascend-conversion` | 45 discovered, 44 passed, 1 failed：`tools/examples/example-pipelines.mlir` 缺少既有 example `run_manifest.json`，与本轮改动无关 |
 | xvm `check-unittests` after `source examples/env.sh` | 10 discovered, 8 passed, 2 failed：既有 runtime `MatmulTilingDispatcherTest` abort、`MixDirectTilingArtifactsTest` 缺 `libascend_hal.so`；新增 `AscendKernelPatternTest` passed |
 
 ### Phase 2 收口摘要
@@ -279,7 +279,7 @@ Review / verification:
 | 代码范围 | 新增 `include/Conversion/Ascend/Schedule/*.h` 9 个、`lib/Conversion/Ascend/Schedule/*.cpp` 8 个；局部更新 `SchedulePass.cpp` 与 `lib/Conversion/Ascend/CMakeLists.txt` |
 | 测试范围 | 当前 `test/Conversion/ascend-schedule-*.mlir` 共 10 个；Phase 2 新增 9 个 focused schedule lit |
 | 行为覆盖 | pattern view、axis coalescing、problem builder、template registry、search、guards、decision set、cache、structured lowering marker |
-| 最终验证 | schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
+| 最终验证 | schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-ascend-conversion` 44 discovered, 41 passed, 3 unsupported |
 | final review | V2-4 spec review approved；code/test review approved |
 | 残余风险 | 当前 `AxisCoalescer` 已覆盖分类/report、broadcast/reduction/multi-primary；若后续要求真正把相邻轴折叠成更少 logical axes，需要在 Phase 3/后续 Schedule 增量中补更强 collapse 测试 |
 | Phase 3 交接 | `StructuredLowering` 当前只写 `loop_skeleton_v0` marker，不做内存物化；Phase 3 从 `PlacementPlan`、`StaticMemoryPlan`、`MovementPlan`、`MemoryRealizationPlan` 接续 |
@@ -298,9 +298,9 @@ Task 1 已执行：
 ```bash
 git diff --check
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir build-v2-verify/test/Conversion/ascend-schedule-pattern-view.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir build-v2-verify/test/Conversion/ascend-schedule-pattern-view.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -308,15 +308,15 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | 命令 | 结果 |
 |---|---|
 | `git diff --check` | passed |
-| `afir-opt` build + Phase 2 Task 1 focused lit | 3 discovered, 3 passed |
-| `check-afir` | 36 discovered, 33 passed, 3 unsupported |
+| `ascend-mlir-opt` build + Phase 2 Task 1 focused lit | 3 discovered, 3 passed |
+| `check-ascend-conversion` | 36 discovered, 33 passed, 3 unsupported |
 
 Task 2 已执行：
 
 ```bash
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -324,15 +324,15 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | 命令 | 结果 |
 |---|---|
 | `git diff --check --cached` | passed |
-| `afir-opt` build + Phase 2 Task 2 focused lit | 4 discovered, 4 passed |
-| `check-afir` | 37 discovered, 34 passed, 3 unsupported |
+| `ascend-mlir-opt` build + Phase 2 Task 2 focused lit | 4 discovered, 4 passed |
+| `check-ascend-conversion` | 37 discovered, 34 passed, 3 unsupported |
 
 Task 3 已执行：
 
 ```bash
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -340,15 +340,15 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | 命令 | 结果 |
 |---|---|
 | `git diff --check --cached` | passed |
-| `afir-opt` build + Phase 2 Task 3 focused lit | 5 discovered, 5 passed |
-| `check-afir` | 38 discovered, 35 passed, 3 unsupported |
+| `ascend-mlir-opt` build + Phase 2 Task 3 focused lit | 5 discovered, 5 passed |
+| `check-ascend-conversion` | 38 discovered, 35 passed, 3 unsupported |
 
 Task 4 已执行：
 
 ```bash
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task4-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DAFIR_ENABLE_BINDING_PYTHON=false && cmake --build build-v2-task4-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task4-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task4-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task4-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DLEGACY_FRONTEND_BINDINGS=false && cmake --build build-v2-task4-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task4-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task4-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task4-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task4-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task4-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -356,17 +356,17 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task4-verif
 | 命令 | 结果 |
 |---|---|
 | `git diff --check --cached` | passed |
-| clean `afir-opt` build + Phase 2 Task 4 focused lit | 6 discovered, 6 passed |
-| `check-afir` | 39 discovered, 36 passed, 3 unsupported |
+| clean `ascend-mlir-opt` build + Phase 2 Task 4 focused lit | 6 discovered, 6 passed |
+| `check-ascend-conversion` | 39 discovered, 36 passed, 3 unsupported |
 
 Task 5 已执行：
 
 ```bash
 rsync -av --relative include/Conversion/AscendV2/Schedule/ScheduleTypes.h include/Conversion/AscendV2/Schedule/ScheduleSearch.h lib/Conversion/AscendV2/Schedule/ScheduleSearch.cpp lib/Conversion/AscendV2/Schedule/SchedulePass.cpp lib/Conversion/AscendV2/CMakeLists.txt test/Conversion/ascend-schedule-search.mlir xvm@orb:/home/niu/code/Ascend-MLIR/
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task5-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DAFIR_ENABLE_BINDING_PYTHON=false && cmake --build build-v2-task5-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task5-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task5-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task5-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DLEGACY_FRONTEND_BINDINGS=false && cmake --build build-v2-task5-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task5-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task5-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task5-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task5-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task5-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -374,17 +374,17 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task5-verif
 | 命令 | 结果 |
 |---|---|
 | `git diff --check` | passed |
-| clean `afir-opt` build + Phase 2 Task 5 focused lit | 7 discovered, 7 passed |
-| `check-afir` | 40 discovered, 37 passed, 3 unsupported |
+| clean `ascend-mlir-opt` build + Phase 2 Task 5 focused lit | 7 discovered, 7 passed |
+| `check-ascend-conversion` | 40 discovered, 37 passed, 3 unsupported |
 
 Task 6 已执行：
 
 ```bash
 rsync -av --relative include/Conversion/AscendV2/Schedule/ScheduleTypes.h include/Conversion/AscendV2/Schedule/ScheduleSearch.h lib/Conversion/AscendV2/Schedule/ScheduleSearch.cpp lib/Conversion/AscendV2/Schedule/SchedulePass.cpp test/Conversion/ascend-schedule-guards.mlir xvm@orb:/home/niu/code/Ascend-MLIR/
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task6-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DAFIR_ENABLE_BINDING_PYTHON=false && cmake --build build-v2-task6-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task6-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task6-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task6-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DLEGACY_FRONTEND_BINDINGS=false && cmake --build build-v2-task6-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task6-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task6-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task6-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task6-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task6-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -392,17 +392,17 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task6-verif
 | 命令 | 结果 |
 |---|---|
 | `git diff --check` | passed |
-| clean `afir-opt` build + Phase 2 Task 6 focused lit | 8 discovered, 8 passed |
-| `check-afir` | 41 discovered, 38 passed, 3 unsupported |
+| clean `ascend-mlir-opt` build + Phase 2 Task 6 focused lit | 8 discovered, 8 passed |
+| `check-ascend-conversion` | 41 discovered, 38 passed, 3 unsupported |
 
 Task 7 已执行：
 
 ```bash
 rsync -av --relative include/Conversion/AscendV2/Schedule/ScheduleTypes.h include/Conversion/AscendV2/Schedule/ScheduleDecision.h lib/Conversion/AscendV2/Schedule/ScheduleDecision.cpp lib/Conversion/AscendV2/Schedule/SchedulePass.cpp lib/Conversion/AscendV2/CMakeLists.txt test/Conversion/ascend-schedule-decision-set.mlir test/Conversion/ascend-schedule-pattern-view.mlir xvm@orb:/home/niu/code/Ascend-MLIR/
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task7-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DAFIR_ENABLE_BINDING_PYTHON=false && cmake --build build-v2-task7-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task7-verify/test/Conversion/ascend-schedule-decision-set.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task7-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task7-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DLEGACY_FRONTEND_BINDINGS=false && cmake --build build-v2-task7-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task7-verify/test/Conversion/ascend-schedule-decision-set.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task7-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task7-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task7-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -410,17 +410,17 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task7-verif
 | 命令 | 结果 |
 |---|---|
 | `git diff --check` | passed |
-| clean `afir-opt` build + Phase 2 Task 7 focused lit | 9 discovered, 9 passed |
-| `check-afir` | 42 discovered, 39 passed, 3 unsupported |
+| clean `ascend-mlir-opt` build + Phase 2 Task 7 focused lit | 9 discovered, 9 passed |
+| `check-ascend-conversion` | 42 discovered, 39 passed, 3 unsupported |
 
 Task 8 已执行：
 
 ```bash
 rsync -av --relative include/Conversion/AscendV2/Schedule/ScheduleTypes.h include/Conversion/AscendV2/Schedule/ScheduleCache.h lib/Conversion/AscendV2/Schedule/ScheduleCache.cpp lib/Conversion/AscendV2/Schedule/SchedulePass.cpp lib/Conversion/AscendV2/CMakeLists.txt test/Conversion/ascend-schedule-cache.mlir xvm@orb:/home/niu/code/Ascend-MLIR/
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task8-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DAFIR_ENABLE_BINDING_PYTHON=false && cmake --build build-v2-task8-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task8-verify/test/Conversion/ascend-schedule-cache.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-decision-set.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task8-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task8-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DLEGACY_FRONTEND_BINDINGS=false && cmake --build build-v2-task8-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task8-verify/test/Conversion/ascend-schedule-cache.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-decision-set.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task8-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task8-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task8-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task8-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -428,21 +428,21 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task8-verif
 | 命令 | 结果 |
 |---|---|
 | `git diff --check` | passed |
-| clean `afir-opt` build + Phase 2 Task 8 focused lit | 10 discovered, 10 passed |
-| `check-afir` | 43 discovered, 40 passed, 3 unsupported |
+| clean `ascend-mlir-opt` build + Phase 2 Task 8 focused lit | 10 discovered, 10 passed |
+| `check-ascend-conversion` | 43 discovered, 40 passed, 3 unsupported |
 
 Task 9 已执行：
 
 ```bash
 rsync -av --relative test/Conversion/ascend-schedule-structured-lowering.mlir xvm@orb:/home/niu/code/Ascend-MLIR/
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && set +e; build-v2-task8-verify/bin/afir-opt test/Conversion/ascend-schedule-structured-lowering.mlir --ascend-normalize --ascend-kernelize --ascend-schedule="dump-report=true debug-stage=schedule" 2>&1 | /home/niu/code/llvm-project/llvm/build/bin/FileCheck test/Conversion/ascend-schedule-structured-lowering.mlir; status=$?; echo TASK9_RED_FILECHECK_STATUS=$status; exit 0'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && set +e; build-v2-task8-verify/bin/ascend-mlir-opt test/Conversion/ascend-schedule-structured-lowering.mlir --ascend-normalize --ascend-kernelize --ascend-schedule="dump-report=true debug-stage=schedule" 2>&1 | /home/niu/code/llvm-project/llvm/build/bin/FileCheck test/Conversion/ascend-schedule-structured-lowering.mlir; status=$?; echo TASK9_RED_FILECHECK_STATUS=$status; exit 0'
 
 rsync -av --relative include/Conversion/AscendV2/Schedule/StructuredLoweringDriver.h lib/Conversion/AscendV2/Schedule/StructuredLoweringDriver.cpp lib/Conversion/AscendV2/Schedule/SchedulePass.cpp lib/Conversion/AscendV2/CMakeLists.txt test/Conversion/ascend-schedule-structured-lowering.mlir xvm@orb:/home/niu/code/Ascend-MLIR/
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task9-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DAFIR_ENABLE_BINDING_PYTHON=false && cmake --build build-v2-task9-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task9-verify/test/Conversion/ascend-schedule-structured-lowering.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-cache.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-decision-set.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task9-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task9-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DLEGACY_FRONTEND_BINDINGS=false && cmake --build build-v2-task9-verify --target ascend-mlir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task9-verify/test/Conversion/ascend-schedule-structured-lowering.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-cache.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-decision-set.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task9-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task9-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
 
-ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verify --target check-afir -j10'
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verify --target check-ascend-conversion -j10'
 ```
 
 结果：
@@ -451,8 +451,8 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 |---|---|
 | RED: Task 8 binary + new structured lowering lit | failed as expected；`TASK9_RED_FILECHECK_STATUS=1` |
 | `git diff --check --cached` | passed |
-| clean `afir-opt` build + Phase 2 Task 9 focused lit | 11 discovered, 11 passed |
-| `check-afir` | 44 discovered, 41 passed, 3 unsupported |
+| clean `ascend-mlir-opt` build + Phase 2 Task 9 focused lit | 11 discovered, 11 passed |
+| `check-ascend-conversion` | 44 discovered, 41 passed, 3 unsupported |
 
 ## Phase 3：Realize plan objects
 
@@ -475,23 +475,23 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | TDD RED: `ascend-realize-mvp.mlir` / `ascend-realize-rejects-unscheduled.mlir` | failed as expected：`--ascend-realize` 未注册 |
 | TDD RED: `ascend-realize-rejects-partial-attrs.mlir` | failed as expected：半标记 op 被静默忽略 |
 | TDD RED: `ascend-realize-rejects-inconsistent-attrs.mlir` | failed as expected：同 kernel 不一致 schedule attrs 被接受 |
-| xvm focused build/test | `ninja -C build afir-opt` passed；Realize focused lit 4/4 passed；pipeline smoke passed |
+| xvm focused build/test | `ninja -C build ascend-mlir-opt` passed；Realize focused lit 4/4 passed；pipeline smoke passed |
 | spec review | passed：未越界实现真实 bufferization / placement / movement / materialization |
 | code quality review | approved after re-review：同 kernel schedule attr 一致性已补充 |
-| xvm `check-afir` | not completed：broader run 长时间停在既有 `externals/pyasc/.../Translation.cpp` 编译单元，已中断；本轮以 focused Realize + pipeline smoke 作为验证依据 |
+| xvm `check-ascend-conversion` | not completed：broader run 长时间停在既有 `externals/pyasc/.../Translation.cpp` 编译单元，已中断；本轮以 focused Realize + pipeline smoke 作为验证依据 |
 | TDD RED: Realize bufferization facts | failed as expected：旧实现仍输出 `mode = "gm_only"` / `buffer_values = 0`；mixed-use 回归中旧逻辑会把 `%mid` 同时计为 output 和 temporary |
-| TDD GREEN: Realize bufferization facts | `ninja -C build afir-opt` passed；`llvm-lit -v build/test/Conversion/ascend-realize-mvp.mlir build/test/Conversion/ascend-realize-bufferization-facts.mlir` 2/2 passed |
+| TDD GREEN: Realize bufferization facts | `ninja -C build ascend-mlir-opt` passed；`llvm-lit -v build/test/Conversion/ascend-realize-mvp.mlir build/test/Conversion/ascend-realize-bufferization-facts.mlir` 2/2 passed |
 | spec review: Bufferization facts MVP | passed：实现符合计划，只做只读 tensor fact collection，无 One-Shot Bufferize / IR mutation / placement / movement 越界 |
 | code quality review: Bufferization facts MVP | approved after re-review：角色互斥计数修复，dead result 不再误计为 output |
-| xvm focused build/unit/ctest | `ninja -C build afir-opt AscendCommonAttributesTest AscendKernelPatternTest` passed；`AscendCommonAttributesTest` 1/1 passed；`AscendKernelPatternTest` 1/1 passed；`ctest -R "Ascend(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
+| xvm focused build/unit/ctest | `ninja -C build ascend-mlir-opt AscendCommonAttributesTest AscendKernelPatternTest` passed；`AscendCommonAttributesTest` 1/1 passed；`AscendKernelPatternTest` 1/1 passed；`ctest -R "Ascend(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
 | xvm Conversion lit | `llvm-lit -v build/test/Conversion` 30/30 passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 23/23 passed |
 | code naming guard | `test/tools/check_ascend_no_v2_code_naming.sh` passed |
 | TDD RED: Realize placement plan | failed as expected：旧实现缺少 `mode = "gm_default"`，且仍输出 `selected_places = 0` |
-| TDD GREEN: Realize placement plan | `ninja -C build afir-opt` passed；`llvm-lit -v build/test/Conversion/ascend-realize-mvp.mlir build/test/Conversion/ascend-realize-placement-plan.mlir` 2/2 passed |
+| TDD GREEN: Realize placement plan | `ninja -C build ascend-mlir-opt` passed；`llvm-lit -v build/test/Conversion/ascend-realize-mvp.mlir build/test/Conversion/ascend-realize-placement-plan.mlir` 2/2 passed |
 | spec review: PlacementPlan GM-default MVP | passed：实现符合计划，只做只读 GM-default placement counters，无 TargetMemoryModel / IR mutation / memory materialization 越界 |
 | code quality review: PlacementPlan GM-default MVP | approved：GM-default 计数不变量一致；已按建议为 split-input LIT 增加 report anchors |
 | TDD RED: Phase 3 completion MVP | failed as expected：旧实现缺少 `StaticMemoryPlan` / `MovementPlan` / `MemoryRealizationPlan` 新 report 字段；新增 planner unit test 在生产修复前失败 |
-| TDD GREEN: Phase 3 completion MVP | `ninja -C build afir-opt AscendRealizePlannerTest` passed；`AscendRealizePlannerTest` 8/8 passed；focused completion lit 2/2 passed |
+| TDD GREEN: Phase 3 completion MVP | `ninja -C build ascend-mlir-opt AscendRealizePlannerTest` passed；`AscendRealizePlannerTest` 8/8 passed；focused completion lit 2/2 passed |
 | spec review: Phase 3 completion MVP | passed：五个 Realize plan objects 均有 builder/driver 和 report；无 One-Shot Bufferize / TargetMemoryModel / IR mutation / memory materialization 越界 |
 | code quality review: Phase 3 completion MVP | approved after re-review：`verification_scope = "plan_identity_only"`；movement/static/realization plan id 与 MVP shape 不变量均有 unit 覆盖 |
 
@@ -500,9 +500,9 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | 项 | 状态 | 处理结论 | 验证 |
 |---|---|---|---|
 | `AxisKind::Broadcast` enum 残留 | `Done` | 删除 enum value，broadcast 继续通过 `broadcastAxes` metadata 表达 | `ascend-schedule-axis-coalescing.mlir` / `ascend-schedule-problem.mlir` passed |
-| `AscendRealizePass` phantom dependent dialects | `Done` | 移除 `FuncDialect` / `LinalgDialect` / `MemRefDialect` 依赖声明和死 include | `ninja -C build afir-opt` passed；Realize focused lit passed |
+| `AscendRealizePass` phantom dependent dialects | `Done` | 移除 `FuncDialect` / `LinalgDialect` / `MemRefDialect` 依赖声明和死 include | `ninja -C build ascend-mlir-opt` passed；Realize focused lit passed |
 | `RealizeTypes.h` dead include | `Done` | 删除未使用 `SmallVector.h` / `StringRef.h` / `LLVM.h` include | `ninja -C build AscendCommonAttributesTest` passed |
-| Realize `MemoryPlace` 与 TargetProfile 命名边界 | `Done` | 增加注释说明 Realize placement enum 与 target hardware memory hierarchy 不同 | `afir-opt` build passed |
+| Realize `MemoryPlace` 与 TargetProfile 命名边界 | `Done` | 增加注释说明 Realize placement enum 与 target hardware memory hierarchy 不同 | `ascend-mlir-opt` build passed |
 | unscheduled Realize 测试命名 | `Done` | `ascend-realize-requires-schedule.mlir` 重命名为 `ascend-realize-rejects-unscheduled.mlir` | renamed lit passed |
 | Ascend shared attributes | `Done` | 新增 `Conversion/Ascend/Common/Attributes.h`，Kernelize / Schedule / Realize 使用同源常量 | 新增 `AscendCommonAttributesTest` passed |
 | 代码命名去版本化 | `Done` | 源码目录、namespace、CMake target、IR attrs、测试名迁移为版本无关 `Ascend` 命名；方案/文档版本名保留 | guard、xvm build、unit、ctest、Ascend lit passed |
@@ -514,7 +514,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | `buildFallbackPattern` 丢弃 closure 计算结果 | `Done` | 删除无效 `computeCandidateClosure` 调用；candidate / merged / horizontal candidate 的真实 closure 计算保留 | `AscendKernelPatternTest` passed；Ascend Conversion lit passed |
 | `MovementPlanner` 硬耦合 `empty_workspace` | `Done` | 仅保留 kernel id 与 tracked place 不变量；不再拒绝 future static-memory mode、workspace slots、known peak usage | `AscendRealizePlannerTest` 覆盖 future static plan cases |
 | `AscendRealizePass` 空模块诊断 | `Done` | empty/no scheduled op 路径直接 emit 明确 module diagnostic，避免依赖通用 fallback 错误 | `ascend-realize-rejects-unscheduled.mlir` passed |
-| `ScheduleContract::templateFamilies` 生命周期 | `Done` | 改为 owning `SmallVector<std::string, 2>`，merge / report helpers 同步使用 owning strings | xvm `afir-opt` build、Kernelize/Realize focused lit passed |
+| `ScheduleContract::templateFamilies` 生命周期 | `Done` | 改为 owning `SmallVector<std::string, 2>`，merge / report helpers 同步使用 owning strings | xvm `ascend-mlir-opt` build、Kernelize/Realize focused lit passed |
 
 Review / verification:
 
@@ -523,7 +523,7 @@ Review / verification:
 | TDD RED: `AscendCommonAttributesTest` | failed as expected：`Conversion/Ascend/Common/Attributes.h` 不存在 |
 | TDD RED: code naming guard | failed as expected：旧代码中存在 `AscendV2` / `ascend.v2` / `ascend-v2-pipeline` |
 | TDD RED: guard fallback probe | failed as expected：无 `rg` 环境下，临时 `AscendV2Probe` 同样被 `grep/find` fallback 捕获 |
-| xvm build | `ninja -C build afir-opt AscendCommonAttributesTest AscendKernelPatternTest` passed |
+| xvm build | `ninja -C build ascend-mlir-opt AscendCommonAttributesTest AscendKernelPatternTest` passed |
 | xvm unit tests | `AscendCommonAttributesTest` 1/1 passed；`AscendKernelPatternTest` 1/1 passed；`ctest -R "Ascend(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
 | xvm focused lit | Realize / Schedule / pipeline smoke 7/7 passed |
 | xvm Ascend Conversion lit | `ascend-*.mlir` 22/22 passed |
@@ -561,7 +561,7 @@ Review / verification:
 | 命令 | 结果 |
 |---|---|
 | TDD RED: `ascend-realize-memory-space-annotate.mlir` multi-kernel count | failed as expected：旧实现把 module-wide annotation count 写入每个 kernel，`kernel_1` 期望 0 实际为 1 |
-| xvm focused build/test | `ninja -C build afir-opt AscendRealizePlannerTest` passed；`ctest -R "AscendRealizePlannerTest"` 1/1 passed |
+| xvm focused build/test | `ninja -C build ascend-mlir-opt AscendRealizePlannerTest` passed；`ctest -R "AscendRealizePlannerTest"` 1/1 passed |
 | xvm focused lit | Realize memory-space / one-shot / movement / workspace / MVP / completion 6/6 passed |
 | spec review | passed：`memory-space-annotate` 先 One-Shot Bufferize，只标注已证明 vector temporary，不插入 workspace/subview/copy |
 | code quality review | approved after re-review：per-kernel count、cross-kernel temporary negative case、alloc dynamic sizes / symbol operands / alignment 均已覆盖 |
@@ -579,8 +579,8 @@ Review / verification:
 |---|---|---|---|
 | `ComputeLoweringDriver` 对齐 | `Done` | 新增 `--ascend-compute-lower` 正式入口，复用现有 LinalgToAscendC lowering，并通过 support matrix 对 unsupported op / movement path fail-closed；external `func.func` declaration 保守 no-op | `ascend-compute-lower.mlir`；`ascend-compute-lower-unsupported*.mlir`；`ascend-compute-lower-external.mlir`；`AscendBackendSupportMatrixTest` |
 | ABI lowering 对齐 | `Done` | 新增 `--ascend-parallelize`、`--ascend-prepare-for-emit`、`--ascend-canonicalize-cann-signature` 正式入口，旧原型入口保留 | `ascend-backend-abi-wrappers.mlir` |
-| `HostTilingEmitter` | `Done` | `afir-translate --host-tiling-out` 输出静态 shape / 单 kernel C ABI source | `cann-translate-runtime-artifacts.mlir` |
-| `ArtifactManifestBuilder` | `Done` | `afir-translate --artifact-manifest-out` 输出静态 shape manifest；单 kernel root 字段保持兼容，多 global kernel 生成 `kernel_entries` 与 `kernelGraph.nodes/edges`，并校验未知端点 / 非 DAG 边 | `cann-translate-runtime-artifacts.mlir`；`cann-translate-runtime-artifacts-multi.mlir`；`cann-translate-runtime-artifacts-unsupported.mlir` |
+| `HostTilingEmitter` | `Done` | `ascend-mlir-translate --host-tiling-out` 输出静态 shape / 单 kernel C ABI source | `cann-translate-runtime-artifacts.mlir` |
+| `ArtifactManifestBuilder` | `Done` | `ascend-mlir-translate --artifact-manifest-out` 输出静态 shape manifest；单 kernel root 字段保持兼容，多 global kernel 生成 `kernel_entries` 与 `kernelGraph.nodes/edges`，并校验未知端点 / 非 DAG 边 | `cann-translate-runtime-artifacts.mlir`；`cann-translate-runtime-artifacts-multi.mlir`；`cann-translate-runtime-artifacts-unsupported.mlir` |
 | `tiling_space.json` export | `Done` | `--tiling-space-out` 升级为 `schema_version = "2.0"`，包含 workspace/block dim/schema fields；兼容旧多 global module 选择首个 global kernel 的行为 | `cann-translate-runtime-artifacts.mlir`；`cann-translate-runtime-artifacts-unsupported.mlir` |
 | transformer dynamic smoke | `Done` | `examples/transformer/transformer_dynamic.mlir` 已纳入 Phase 5 验收 smoke；Kernelize 按 `LayoutTransform` 语义接收高 rank transpose；Schedule 已用 `ascend.schedule.kernel_metadata` 按 kernel 持久化 func 级 metadata，避免 tile params / tail plan 静默覆盖；ComputeLower 对 GM copy / transpose / matmul / batch_matmul / scalar generic fallback 闭环，完整 transformer prefix full codegen 通过 | `ascend-phase5-transformer-dynamic-smoke.mlir`；`ascend-kernelize-transpose.mlir`；`ascend-compute-lower-transpose*.mlir`；`ascend-compute-lower-*-gm.mlir`；`ascend-schedule-multi-kernel-func-metadata.mlir` |
 | pre-lowered ordinary example acceptance | `Done` | 旧式前处理路径已保留为 `examples/relu-broadcast-transpose/run-legacy.sh`；默认 `run.sh` 已切到 `run-mainline.sh`，生成 `phase5_tiling_space.json`、`phase5_artifact_manifest.json`、`host_tiling.cpp` 后跑通 runtime-session sim 验证 | xvm mainline run passed：`session.result=success`、`session.validation=pass` |
@@ -609,7 +609,7 @@ Review / verification:
 |---|---|
 | host static checks | `git diff --check -- . ':!AGENTS.md'` passed；`test/tools/check_ascend_no_v2_code_naming.sh` passed |
 | xvm Phase 5 focused verification | `AscendBackendSupportMatrixTest` 1/1 passed；Phase 5 focused LIT 8/8 passed |
-| xvm Task 4 focused translation | `ninja -C build afir-translate` passed；Target runtime artifact lit 3/3 passed |
+| xvm Task 4 focused translation | `ninja -C build ascend-mlir-translate` passed；Target runtime artifact lit 3/3 passed |
 | xvm runtime artifact write failure | `--host-tiling-out=/dev/full` 返回 status 1，并输出 `failed to flush runtime artifact '/dev/full': No space left on device` MLIR diagnostic；无 LLVM fatal |
 | xvm Phase 5 final regression | xvm code naming guard passed；`ctest -R "Ascend(...)"` 8/8 passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 36/36 passed；`llvm-lit -v build/test/Target` 11/11 passed |
 | Task 4 code review | approved：runtime artifact 文件错误处理、`--tiling-space-out` 多 global 兼容、single-kernel manifest/host tiling 校验均通过 |
@@ -624,7 +624,7 @@ Review / verification:
 | xvm gather-elementwise-fusion mainline E2E | `run.sh --log` 默认 `M=64,N=64,K=16,BLOCK_DIM=20` passed；`run_simbackend_examples.sh gather-elementwise-fusion` passed；focused LIT 3/3 passed；runtime-session sim `session.result=success`、`session.validation=pass` |
 | xvm gather-elementwise-fusion M-tail baseline matrix | `M=65,N=80,K=16`、`M=96,N=128,K=16`、`M=160,N=128,K=16`、`M=96,N=128,K=32` passed；早期 matrix 覆盖 M 维动态 shape 与 16 对齐 N/K |
 | xvm gather-elementwise-fusion N/K tail matrix | `M=65,N=127,K=31,BLOCK_DIM=20`、`M=96,N=128,K=31,BLOCK_DIM=20`、`M=96,N=127,K=32,BLOCK_DIM=20` passed；`run_simbackend_examples.sh gather-elementwise-fusion` 已纳入三组 matrix 并 passed；覆盖 K tail、N tail、N/K 同时 tail |
-| xvm gather N/K tail focused regression | `ninja -C build afir-opt afir-translate AscendCommonAttributesTest` passed；`AscendCommonAttributesTest` 1/1 passed；focused LIT 9/9 passed：schedule axis/problem/guards/search、full-pipeline gather、realize gather bridge、CANN gather/runtime artifacts；host `git diff --check -- . ':!AGENTS.md'` passed；`check_ascend_no_v2_code_naming.sh` passed |
+| xvm gather N/K tail focused regression | `ninja -C build ascend-mlir-opt ascend-mlir-translate AscendCommonAttributesTest` passed；`AscendCommonAttributesTest` 1/1 passed；focused LIT 9/9 passed：schedule axis/problem/guards/search、full-pipeline gather、realize gather bridge、CANN gather/runtime artifacts；host `git diff --check -- . ':!AGENTS.md'` passed；`check_ascend_no_v2_code_naming.sh` passed |
 | xvm ordinary example regression after gather tail | `examples/broadcast-add-reduce/run.sh --log`、`examples/relu-broadcast-transpose/run.sh --log`、`examples/add-broadcast-concat/run.sh --log` passed；均报告 `session.result=success`、`session.validation=pass` |
 | xvm broadcast-add-reduce shape matrix | `M=65,N=128,BLOCK_DIM=2`、`M=70,N=128,BLOCK_DIM=2`、`M=72,N=128,BLOCK_DIM=2`、`M=70,N=123,BLOCK_DIM=2`、`M=128,N=123,BLOCK_DIM=2` passed；覆盖 rows<16 tail、tail=16/32、N 非 128、无 tail |
 | xvm bounded vector tile focused LIT | `ascend-schedule-search.mlir`、`ascend-schedule-vector-bounded-tile.mlir`、`ascend-compute-lower-selected-all-parallel-tile-materializes-loop.mlir`、`ascend-compute-lower-selected-all-parallel-tile-fallback.mlir`、`ascend-full-pipeline-rank2-elementwise-add.mlir`、selected reduction tile、两个 demo full-pipeline LIT passed |
@@ -638,7 +638,7 @@ Review / verification:
 | xvm supported example default entries | `examples/broadcast-add-reduce/run.sh --log` 与 `examples/relu-broadcast-transpose/run.sh --log` 均委托新主线并通过 runtime-session sim：`session.result=success`、`session.validation=pass`；已删除 relu 根目录旧生成物后重跑，确认不依赖 stale artifacts |
 | xvm runtime tool regression | `bash test/tools/runtime/run_runtime.sh` passed；覆盖 runtime-session CLI / vec example / DAG sim / C API / TaskGraph / SimBackend baseline / mix repeat |
 | xvm example smoke follow-up | 删除 broadcast/relu 根目录旧生成物后，`run_simbackend_examples.sh broadcast-add-reduce` passed；`run_simbackend_examples.sh add-broadcast-concat` passed；`run_simbackend_examples.sh gather-elementwise-fusion` passed；`add-broadcast-concat/build_mainline` + `broadcast-add-reduce/build_mainline` cross-session smoke passed |
-| xvm Phase 5C+ focused verification | `ninja -C build afir-opt afir-translate AscendBackendSupportMatrixTest` passed；`AscendBackendSupportMatrixTest` 4/4 passed；`check_ascend_schedule_decision_contract.sh` passed；xvm code naming guard passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 59/59 passed；`llvm-lit -v build/test/Target` 15/15 passed；`examples/transformer/run-mainline.sh` passed：`mainline_prefix=pass`、`rank2_transpose_closure=pass`、`next_gap=rank3_transpose_semantics`；transpose 泛化后 `llvm-lit -v build/test/Conversion --filter="ascend-"` 59/59 passed，`examples/transformer/run-mainline.sh` passed：`transpose_kernelize_generalization=pass`、`next_gap=batch_matmul_schedule`；contract hardening slice 通过 `AscendCommonAttributesTest` 2/2、`AscendRealizePlannerTest` 15/15、`ascend-dependent-dialects.mlir`、`ascend-kernelize-linalg-interface.mlir`、Target lit 18/18 |
+| xvm Phase 5C+ focused verification | `ninja -C build ascend-mlir-opt ascend-mlir-translate AscendBackendSupportMatrixTest` passed；`AscendBackendSupportMatrixTest` 4/4 passed；`check_ascend_schedule_decision_contract.sh` passed；xvm code naming guard passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 59/59 passed；`llvm-lit -v build/test/Target` 15/15 passed；`examples/transformer/run-mainline.sh` passed：`mainline_prefix=pass`、`rank2_transpose_closure=pass`、`next_gap=rank3_transpose_semantics`；transpose 泛化后 `llvm-lit -v build/test/Conversion --filter="ascend-"` 59/59 passed，`examples/transformer/run-mainline.sh` passed：`transpose_kernelize_generalization=pass`、`next_gap=batch_matmul_schedule`；contract hardening slice 通过 `AscendCommonAttributesTest` 2/2、`AscendRealizePlannerTest` 15/15、`ascend-dependent-dialects.mlir`、`ascend-kernelize-linalg-interface.mlir`、Target lit 18/18 |
 | xvm Phase5 body classifier consolidation | `AscendLinalgBodyClassifierTest` 4/4 passed；`AscendBackendSupportMatrixTest` 4/4 passed；`AscendRealizePlannerTest` 15/15 passed；focused ComputeLower/Realize/Phase5/transpose lit 37/37 passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 61/61 passed；`llvm-lit -v build/test/Target` 15/15 passed；`examples/transformer/run-mainline.sh` passed：`transpose_kernelize_generalization=pass`、`next_gap=batch_matmul_schedule` |
 | xvm Realize materialize driver consolidation | `AscendRealizePlannerTest` 16/16 passed，新增 `MemoryRealizationMaterializeMutatesIRAndPlan` 覆盖 driver 入口直接驱动 IR mutation 与 plan 计数回写；Realize / ComputeLower / Phase5 focused lit 36/36 passed；Ascend Conversion lit 61/61 passed；Target lit 15/15 passed；transformer mainline smoke passed，`next_gap=batch_matmul_schedule`；code naming guard passed |
 | xvm Schedule cube K-axis consolidation | `ascend-schedule-search.mlir` 新增 matmul `[M,N,K]` symbolic tile params / tail plan 回归 passed；Schedule / ComputeLower / Phase5 / matmul focused lit 29/29 passed；`examples/matmul-add-leakyrelu/run-mainline.sh --log` passed，`session.result=success`、`session.validation=pass`、`max_abs_diff=0`；Ascend Conversion lit 61/61 passed；Target lit 15/15 passed；transformer mainline smoke passed，`next_gap=batch_matmul_schedule`；code naming guard passed |
@@ -650,7 +650,7 @@ Review / verification:
 | xvm Schedule axis static extent conflict | `ascend-schedule-axis-coalescing.mlir` CONFLICT case RED confirmed old schedule returned status 0 and reused `d0 == 4` for a second `d0 == 8` op；fix 后 Schedule / Realize / full-pipeline focused lit 41/41 passed；Ascend Conversion lit 62/62 passed；Target lit 15/15 passed；transformer smoke passed；code naming guard passed |
 | xvm transformer full-codegen closure | `batch_matmul` schedule rank3、post-reduction singleton carry、GM->GM copy、GM transpose、GM copy/broadcast generic、GM scalar generic reduction、GM matmul / batch_matmul fallback 均补 LIT；`examples/transformer/run-mainline.sh` 输出 `full_codegen=pass`；Ascend Conversion lit 70/70 passed；Target lit 15/15 passed；Ascend ctest 9/9 passed；code naming guard 与 host `git diff --check` passed |
 | xvm KernelPattern hard constraints | `AscendKernelPatternTest` 新增 `MustCoLocate` / `MustSeparate` partition 覆盖并 3/3 passed；`KernelPartitioner` 现在按 co-location 连通分量原子选择候选，并在贪心选择时排除 must-separate 冲突；Kernelize lit 8/8 passed；Ascend Conversion lit 70/70 passed；Ascend ctest 9/9 passed；xvm code naming guard 与 host `git diff --check` passed |
-| xvm Kernelize primitive enum | `FusionCandidate.primitive` 与 `MergedCandidate.primitiveCombo` 改为 `KernelizePrimitiveKind`，report 通过集中 stringify 保持输出兼容；schedule family 字符串改用 `Common/Attributes.h` 常量，`op_roles` array 判断改用 `OpRole` stringify；`rg` confirmed Kernelize primitive 赋值不再使用裸字符串；`ninja -C build afir-opt AscendKernelPatternTest` passed；Kernelize lit 8/8 passed；Ascend Conversion lit 70/70 passed；Ascend ctest 9/9 passed |
+| xvm Kernelize primitive enum | `FusionCandidate.primitive` 与 `MergedCandidate.primitiveCombo` 改为 `KernelizePrimitiveKind`，report 通过集中 stringify 保持输出兼容；schedule family 字符串改用 `Common/Attributes.h` 常量，`op_roles` array 判断改用 `OpRole` stringify；`rg` confirmed Kernelize primitive 赋值不再使用裸字符串；`ninja -C build ascend-mlir-opt AscendKernelPatternTest` passed；Kernelize lit 8/8 passed；Ascend Conversion lit 70/70 passed；Ascend ctest 9/9 passed |
 | xvm Kernelize iterator enum | `OpSemanticSummary.iteratorTypes` 改为 `IteratorKind` enum；`DependencyAnalysis` 删除 `attr.print()` + `contains("parallel/reduction")` 回退，只接受 linalg typed iterator 或精确 string attr；Kernelize lit 8/8 passed；Ascend Conversion lit 70/70 passed；Ascend ctest 9/9 passed |
 | xvm Phase5 bridge failure preflight | `AscendRealizePlannerTest.Phase5BridgeFailureDoesNotLeavePartialVecOutAlloc` RED confirmed concat/subview bridge failure left a `VECOUT` alloc；fix 后 concat output bridge 先校验 all dim uses 再做任何 IR mutation，并推迟 `ascendc.unit` 标注到 preflight 之后；Realize focused lit 15/15 passed；Ascend Conversion lit 70/70 passed；Ascend ctest 9/9 passed |
 | xvm Realize op_roles array consumption | `ascend-realize-op-roles-array.mlir` RED confirmed only `ascend.op_roles=["Primary","Vector","Injective"]` produced `memory_space_annotations = 0`；fix 后 Realize role checks consume `ascend.op_roles` array before legacy scalar `ascend.op_role`，并集中 `Vector/Cube` array contract strings to `Common/Attributes.h`；focused lit passed；Ascend Conversion lit 71/71 passed；Ascend ctest 9/9 passed |
@@ -673,23 +673,23 @@ Review / verification:
 | xvm MovementStep selected path materialization | `AscendRealizePlannerTest.MemoryRealizationMaterializesSelectedMovementSteps` RED confirmed selected movement step 不改 IR、不回写 alloc/copy 计数；fix 后 `MemoryRealizationDriver` 为 selected GM->local movement 创建目标 memory-space alloc、插入 `memref.copy`、改写同 block/same-kernel linalg input，并把 movement 与 Phase5 bridge materialization counts 合并；focused unit passed；Ascend ctest 10/10 passed；Realize/ComputeLower/full-pipeline focused lit 43/43 passed；Ascend Conversion lit 81/81 passed；Target lit 15/15 passed；code naming guard passed |
 | xvm MovementStep workspace subview materialization | `AscendRealizePlannerTest.MemoryRealizationMaterializesMovementStepsThroughWorkspaceSubviews` RED confirmed two selected same-shape GM inputs created two `VECIN` allocs and zero subviews；fix 后同 kernel / 同 block / 同目标 memory space / 静态 identity 同形 movement steps 合并为一个 workspace alloc，按 slot 生成 rank-reduced `memref.subview`，并保留每 step 一个 copy；focused unit 2/2 passed；Ascend ctest 10/10 passed；Realize/ComputeLower/full-pipeline focused lit 43/43 passed；Ascend Conversion lit 81/81 passed；Target lit 15/15 passed；code naming guard passed |
 | xvm Realize selected movement view-chain | `ascend-realize-view-chain-movement.mlir` RED confirmed `tensor.extract_slice` consumer chain made `temporary_values = 0` and selected movement materialization stayed at 0 alloc/copy；`ascend-realize-reshape-view-chain-movement.mlir` RED confirmed reshape view-chain 不能 materialize；fix 后 Bufferization facts 透明追溯 tensor view producer/consumer，materialize 层在 `VECIN` 上重建 `memref.subview` / `memref.cast` / `memref.expand_shape` / `memref.collapse_shape` view-chain 并改写 consumer；`AscendRealizePlannerTest` passed；Realize/full-pipeline lit 26 discovered passed；Ascend Conversion + CANN translate lit 105 discovered passed；Ascend ctest 10/10 passed；all `examples/*/run-mainline.sh` passed；code naming guard passed |
-| xvm commercial readiness residual closure | Realize dynamic view-chain、Kernelize seed policy、Kernelize family resolver、Schedule file-backed tuning cache、generated `KernelizeSemanticOpInterface` 五项完成并逐项通过 spec/code review；final review 追加修复 native interface resolution failure fail-open 风险；final host static checks `git diff --check`、`check_ascend_public_headers.sh`、`check_ascend_no_v2_code_naming.sh` passed；xvm `ninja -C build afir-opt afir-translate AscendKernelizeOpInterfaceTest AscendKernelPatternTest AscendRealizePlannerTest AscendScheduleDecisionTest` passed；ctest focused 4/4 passed；focused lit 13/13 passed；Conversion `ascend-` lit 92/92 passed；Target lit 23/23 passed；`examples/transformer/run-mainline.sh` 输出 `transformer_dynamic.full_codegen=pass`；`examples/relu-broadcast-transpose/run-mainline.sh` 与 `examples/matmul-add-leakyrelu/run-mainline.sh --log` 均输出 `session.validation=pass`；matmul mainline 单独复跑也输出 `max_abs_diff=0.000000e+00` |
-| xvm runtime graph / queue lifetime hardening | `ninja -C build -j6 afir-opt afir-translate` passed；focused LIT 6/6 passed（queue lifetime checker、full-pipeline queue lifetime、multi `TilingData`、rank2 elementwise barrier、CANN graph alias、10-example suite）；Ascend/Target filtered LIT 104/104 passed；full Target LIT 23/23 passed；Ascend ctest 14/14 passed；standalone runtime-session regressions passed for `two-kernel-dag --n 64`、`two-kernel-rank-mix-dag --n 64 --k 32`、`three-kernel-dag --n 64`、`rmsnorm-reduction-core`；generated queue lifetime audit over 40 MLIR files reported `deque=228 free=228`；source/generated audit found no lane0 `SetValue(0)` scalar patch, only ReduceSum scalar-result `GetValue(0)` reads |
+| xvm commercial readiness residual closure | Realize dynamic view-chain、Kernelize seed policy、Kernelize family resolver、Schedule file-backed tuning cache、generated `KernelizeSemanticOpInterface` 五项完成并逐项通过 spec/code review；final review 追加修复 native interface resolution failure fail-open 风险；final host static checks `git diff --check`、`check_ascend_public_headers.sh`、`check_ascend_no_v2_code_naming.sh` passed；xvm `ninja -C build ascend-mlir-opt ascend-mlir-translate AscendKernelizeOpInterfaceTest AscendKernelPatternTest AscendRealizePlannerTest AscendScheduleDecisionTest` passed；ctest focused 4/4 passed；focused lit 13/13 passed；Conversion `ascend-` lit 92/92 passed；Target lit 23/23 passed；`examples/transformer/run-mainline.sh` 输出 `transformer_dynamic.full_codegen=pass`；`examples/relu-broadcast-transpose/run-mainline.sh` 与 `examples/matmul-add-leakyrelu/run-mainline.sh --log` 均输出 `session.validation=pass`；matmul mainline 单独复跑也输出 `max_abs_diff=0.000000e+00` |
+| xvm runtime graph / queue lifetime hardening | `ninja -C build -j6 ascend-mlir-opt ascend-mlir-translate` passed；focused LIT 6/6 passed（queue lifetime checker、full-pipeline queue lifetime、multi `TilingData`、rank2 elementwise barrier、CANN graph alias、10-example suite）；Ascend/Target filtered LIT 104/104 passed；full Target LIT 23/23 passed；Ascend ctest 14/14 passed；standalone runtime-session regressions passed for `two-kernel-dag --n 64`、`two-kernel-rank-mix-dag --n 64 --k 32`、`three-kernel-dag --n 64`、`rmsnorm-reduction-core`；generated queue lifetime audit over 40 MLIR files reported `deque=228 free=228`；source/generated audit found no lane0 `SetValue(0)` scalar patch, only ReduceSum scalar-result `GetValue(0)` reads |
 | xvm CANN workspace ABI closure | RED confirmed `ascend-realize-workspace-layout.mlir` report had `workspace_bytes = 128` but output IR lacked `cann.workspace_size_bytes`；fix 后 Realize stamps static planner bytes onto scheduled func, multi-kernel same func conservatively aggregates unique kernel workspace bytes；`CannRuntimeArtifacts` consumes `cann.workspace_size_bytes` for tiling space `workspace_size_expr`、artifact manifest root/per-entry `workspaceSizeBytes` / `workspace.sizeBytes` and host tiling `_GetWorkspaceSize`；focused LIT 3/3 passed；Realize + CANN translate filtered LIT 44/44 passed；Ascend ctest 14/14 passed；Conversion + Target LIT 133/133 passed；examples LIT 1/1 passed；full `build/test` only hits existing Python checker discovery unresolved outside this change |
 | xvm dynamic workspace expression closure | RED confirmed dynamic vector temporary only produced `peak_usage_bytes_known = false` and no workspace expression, while CANN artifacts emitted `workspace_size_expr = "0"`；fix 后 Realize derives `cann.workspace_size_expr = "dim_arg0_0 * 128 * 2"` from tensor shape facts, CANN tiling-space / artifact manifest preserve the expression, and host `_GetWorkspaceSize` lowers known tiling shape fields to `shape_args[0]`；focused LIT 5/5 passed：dynamic workspace Realize, dynamic CANN artifacts, unknown shape-field negative check, static workspace layout regression, static CANN artifact regression |
 | xvm transformer CANN compile blocker closure | RED/GREEN 覆盖 `GlobalTensor -> GlobalTensor` copy、`SetGlobalBuffer` subview/ptr-offset、GM-backed reshape/expand/collapse/subview load-store lowering、scalar f64 constant truncation 与 scalar `math.exp/rsqrt` fallback；fix 后 focused Target LIT 8/8 passed；`runtime-session --kernel examples/transformer/build_mainline/kernel.cpp --kernel-kind vec` 可生成 artifact / manifest；`examples/transformer/run-mainline.sh --runtime-e2e --log` 已越过 artifact compile 并进入 sim，但运行超过 7 分钟未产出 validation，已中断，后续阻塞转为 runtime sim 性能 / numeric validation |
 | xvm runtime expected-output subset validation | RED confirmed NPU backend still rejected run manifests whose `outputs` contained intermediate buffers while `expected_outputs` named only the final golden output；fix 后 NPU validation mirrors SimBackend semantics: allocate every runtime output binding, use expected shape/dtype for matching named golden outputs, require shape/dtype metadata only for non-golden outputs, and compare only the selected named actual outputs；focused `test_taskgraph_runtime` passed：978 passed, 0 failed；full `bash test/tools/runtime/run_runtime.sh` passed，含 runtime-session CLI / DAG sim / NPU mock / C API / SimBackend examples / repeated mix baseline |
 | xvm transformer fragment ladder | RED confirmed new focused LIT failed on missing `examples/transformer-fragments/run-mainline.sh`；第二轮 RED confirmed qkv `--runtime-e2e` 卡在 runtime sim，root cause 为 run manifest 多传已被 mix ABI 过滤的 dead `init`，导致 dynamic-library launch 参数错位；fix 后 qkv manifest 对齐 artifact ABI 的 3 inputs / 1 output，并新增 mix ABI binding count guard；`ninja -C build -j6 runtime-session` passed；focused `test_taskgraph_runtime` passed：982 passed, 0 failed；focused LIT 1/1 passed，layernorm/qkv 均 `session.validation=pass`；full `bash test/tools/runtime/run_runtime.sh` passed；mix device compile command 补 `${ASCEND_HOME_PATH}/${arch}/asc/include`，关闭 generated CANN helper include 缺口；后续 RED confirmed `qkv_heads` 初版 `tensor.concat` producer 与 offset affine map 分别触发 Kernelize unsupported，最终收敛为 flat QKV -> rank4 head view 的 reshape/split 片段；`qkv_project_heads` RED confirmed 单片段 mix 输出 rank4 heads view 被 CANN mix translator 拒绝，失败信号为 `mix translation found a valid single-chain cube/boundary/vector plan`；fix 后 supported mix 增加 identity epilogue，runtime mix ABI 允许输出 golden rank 与物理 CANN ABI rank 不同时按元素数线性化回填动态维；focused `qkv_project_heads --runtime-e2e` passed：artifact_compile/runtime_session/validation 全部 pass |
-| xvm rank3 batch_matmul lowering | RED confirmed `linalg-to-ascendc.mlir` 中 rank3 A2/B2/CO1 `linalg.batch_matmul` 仍残留且没有 batch loop；fix 后 ComputeLower 生成 per-batch `tbuf.get_with_offset` slices 和 `ascendc.mmad`，A/B queue tensor 在 batch loop 外 deque/free，CO1 queue tensor loop 外 alloc/enque；on-chip CO1 输出的 batch_matmul 在 `LinalgBodyClassifier` 中不再被误判为 unknown；`ninja -C build -j6 afir-opt AscendLinalgBodyClassifierTest` passed；`AscendLinalgBodyClassifierTest` 7/7 passed；focused `llvm-lit -v build/test/Conversion/linalg-to-ascendc.mlir` passed |
+| xvm rank3 batch_matmul lowering | RED confirmed `linalg-to-ascendc.mlir` 中 rank3 A2/B2/CO1 `linalg.batch_matmul` 仍残留且没有 batch loop；fix 后 ComputeLower 生成 per-batch `tbuf.get_with_offset` slices 和 `ascendc.mmad`，A/B queue tensor 在 batch loop 外 deque/free，CO1 queue tensor loop 外 alloc/enque；on-chip CO1 输出的 batch_matmul 在 `LinalgBodyClassifier` 中不再被误判为 unknown；`ninja -C build -j6 ascend-mlir-opt AscendLinalgBodyClassifierTest` passed；`AscendLinalgBodyClassifierTest` 7/7 passed；focused `llvm-lit -v build/test/Conversion/linalg-to-ascendc.mlir` passed |
 | xvm attn_score fragment closure | RED confirmed `attn_score --batch 2 --seq 16 --k 32 --runtime-e2e` 先后暴露两层真实缺口：identity epilogue 不能触发 Phase5 vector bridge，改成通用 attention score `batch_matmul + bias add` 后成功进入 A2/B2/CO1 + VECIN/VECOUT bridge；classifier 修复后 `full_codegen=pass`，但旧 CANN mix translator 拒绝 rank3 batch-matmul cube loop，诊断为 `vector region contains ops outside the single executable chain`；fix 后 `AnnotateMixMatmulSemantics` 能识别动态 batch rank3 batch-matmul 与 copy-forward 后的 full-rank add，mix tiling 可从 concrete `.npy` shape 推导 batch，CANN translator 发射 batch loop + vector add special shell；`attn_score --batch 2 --seq 16 --k 32 --runtime-e2e` passed：artifact_compile/runtime_session/validation 全部 pass | `examples/transformer-fragments/attn_score.mlir`；`test/tools/examples/transformer-fragments.mlir`；`cann-translate-mix-batch-attn.mlir`；手动 xvm runtime E2E confirmed `session.validation=pass` |
-| xvm transformer kernel split artifact closure | RED confirmed `--ascend-kernel-split` pass 不存在，transformer full graph translate 仍只产出单个 `__aicore__ void kernel()` / 单条 manifest entry；fix 后新增 `--ascend-kernel-split`，按 `ascend.kernel` 拆分单 `func.func` 内 logical kernels，并把 cross-kernel carried buffers 转为函数 ABI；`ascend-prepare-for-emit` 补 empty tiling ABI 与 view-chain `memref.dim` lowering；`linalg-to-ascendc` 补 on-chip local scalar loop get/set；host tiling 支持 multi-kernel helpers；`ninja -C build -j6 afir-opt afir-translate` passed；focused kernel-split / prepare-for-emit / scalar-local-loop / multi-host-tiling FileCheck passed；manual transformer artifact count confirmed 53 C++ kernels / 53 host tiling helpers / 53 manifest kernel ids / 47 carried-buffer edge entries；`examples/transformer/run-mainline.sh --batch 1 --seq 1 --log` passed：`kernel_split=pass`、`kernel_count=53`、`runtime_artifacts=pass`、`full_codegen=pass` |
+| xvm transformer kernel split artifact closure | RED confirmed `--ascend-kernel-split` pass 不存在，transformer full graph translate 仍只产出单个 `__aicore__ void kernel()` / 单条 manifest entry；fix 后新增 `--ascend-kernel-split`，按 `ascend.kernel` 拆分单 `func.func` 内 logical kernels，并把 cross-kernel carried buffers 转为函数 ABI；`ascend-prepare-for-emit` 补 empty tiling ABI 与 view-chain `memref.dim` lowering；`linalg-to-ascendc` 补 on-chip local scalar loop get/set；host tiling 支持 multi-kernel helpers；`ninja -C build -j6 ascend-mlir-opt ascend-mlir-translate` passed；focused kernel-split / prepare-for-emit / scalar-local-loop / multi-host-tiling FileCheck passed；manual transformer artifact count confirmed 53 C++ kernels / 53 host tiling helpers / 53 manifest kernel ids / 47 carried-buffer edge entries；`examples/transformer/run-mainline.sh --batch 1 --seq 1 --log` passed：`kernel_split=pass`、`kernel_count=53`、`runtime_artifacts=pass`、`full_codegen=pass` |
 | xvm transformer runtime E2E diagnostic closure | RED confirmed full `--runtime-e2e --batch 1 --seq 1` 已能生成 manifest-driven 53-task run manifest，并成功独立编译 `kernel_0` 到 `kernel_52` 的 53 个 artifact；sim 阶段最小阻塞收敛到 `kernel_1` 静态权重转置，`kernel_1` 单 task manifest 在 180s timeout 内未返回，C++ body 为 `384x128 -> 128x384` 的 49152 次 scalar `afir_gm_load/store`；`kernel_3` 单 task manifest 可成功返回，排除空 kernel ABI 问题；`examples/transformer/run-mainline.sh` 已增加 artifact compile / runtime session 阶段标记与 `RUN_TIMEOUT` bounded diagnostics，`transformer-runtime-e2e.mlir` 保持 XFAIL 有界守门 | `examples/transformer/run-mainline.sh`；`test/tools/examples/transformer-runtime-e2e.mlir`；手动 xvm RED：`timeout 180s ./build/bin/runtime-session --run --run-manifest=/tmp/ascend_kernel_1_single_manifest.json` exited 124 |
 | xvm transformer per-kernel kind / mix ABI diagnostic closure | RED confirmed transformer artifact compile 曾把 `kernel_4` / `kernel_25` 这类 mixed cube+vector kernel 硬编码为 `vec`，导致后续 sim 非法访存；fix 后 `--ascend-prepare-for-emit` wrapper 自动运行 `annotate-ascendc-kernel-kind`，artifact manifest root/per-entry/resources 发射 `kernelKind`，transformer artifact compile 从 manifest 选择 vec/cube/mix；mix direct wrapper 改为从 CANN 源签名推导参数数、workspace arg、by-value tiling，并让 MLIR ABI extraction 在 multi-func module 中按 runtime kernel name 选取目标 func；focused LIT 10/10 passed，`test_taskgraph_runtime` 1009/1009 passed，`MixAbiTest` 5/5 passed；当时 full `examples/transformer/run-mainline.sh --runtime-e2e --batch 1 --seq 1 --log` 停在 `kernel_4 kind=mix` 的 AIC compile，错误为 `copy_matrix_cc_to_cbuf`，根因转为 non-primary mix kernel 仍缺少 AIC/AIV 分区 shell emission | `ascend-full-pipeline-matmul-add-leakyrelu.mlir`；`cann-translate-runtime-artifacts-multi.mlir`；`test_taskgraph_runtime.cpp`；`MixAbiTest.cpp`；手动 xvm transformer runtime E2E RED confirmed |
-| xvm transformer per-function mix emission dispatch | RED confirmed multi-func CANN translate 中 primary kernel 为 vec 时，后续 `ascendc.kernel_kind = "mix"` 的 `kernel_b` 仍被普通 CANN printer 输出，没有 `KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2)`；fix 后 translator 统一发射公共 preamble，并按每个 global func 的 `kernelKind` 分派：mix 走 supported/generic mix shell，非 mix 继续走 PyAsc-backed printer；`fixBrokenOpEmitters` 仅作用于非 mix func，避免破坏 mix partition analysis；`cann-translate-runtime-artifacts-multi.mlir` 的 mix fixture 改为真实支持的 rank3 batch-matmul ABI。xvm `ninja -C build -j6 afir-translate runtime-session` passed；focused Target LIT 4/4 passed；当时 `examples/transformer/run-mainline.sh --runtime-e2e --batch 1 --seq 1 --log` 在 Phase5 translate fail-closed 于 `kernel_4`，诊断为 `vector region contains ops outside the single executable chain` | `cann-translate-multi-mix-kernel.mlir`；`cann-translate-mix.mlir`；`cann-translate-mix-batch-attn.mlir`；`cann-translate-runtime-artifacts-multi.mlir`；手动 xvm transformer runtime E2E confirmed |
+| xvm transformer per-function mix emission dispatch | RED confirmed multi-func CANN translate 中 primary kernel 为 vec 时，后续 `ascendc.kernel_kind = "mix"` 的 `kernel_b` 仍被普通 CANN printer 输出，没有 `KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2)`；fix 后 translator 统一发射公共 preamble，并按每个 global func 的 `kernelKind` 分派：mix 走 supported/generic mix shell，非 mix 继续走 PyAsc-backed printer；`fixBrokenOpEmitters` 仅作用于非 mix func，避免破坏 mix partition analysis；`cann-translate-runtime-artifacts-multi.mlir` 的 mix fixture 改为真实支持的 rank3 batch-matmul ABI。xvm `ninja -C build -j6 ascend-mlir-translate runtime-session` passed；focused Target LIT 4/4 passed；当时 `examples/transformer/run-mainline.sh --runtime-e2e --batch 1 --seq 1 --log` 在 Phase5 translate fail-closed 于 `kernel_4`，诊断为 `vector region contains ops outside the single executable chain` | `cann-translate-multi-mix-kernel.mlir`；`cann-translate-mix.mlir`；`cann-translate-mix-batch-attn.mlir`；`cann-translate-runtime-artifacts-multi.mlir`；手动 xvm transformer runtime E2E confirmed |
 | xvm transformer attention softmax/context/block closure | RED confirmed `attn_softmax` 首次 runtime validation 失败来自两层通用缺口：GM scalar-loop reduction 读未初始化 accumulator，因为 GM `linalg.fill` 被错误删除；单 kernel ABI `numOutputs=4` 时 run manifest 只绑定最终输出，导致中间 GM buffer 未按 ABI 传齐。fix 后 GM fill 降为 scalar store loop，`attn_softmax` 输出绑定显式包含 `row_max` / `exp_shifted` / `row_sum` / `out`，只对最终 `out` 做 golden 校验；`attn_context` RED confirmed f32 rank3 `batch_matmul` 现阶段可走已有 GM scalar fallback，脚本不再误走 mix wrapper；`attention_block` RED confirmed composed block 的 score/softmax/context 中间值正确，最终 `out` 首次 mismatch 来自 GM scalar-loop transpose 对非自反 permutation 使用了正向 permutation，fix 后改为 inverse permutation 并补 rank4 回归；三个 fragment 均在 `--batch 1 --seq 16 --runtime-e2e` 下输出 `session.validation=pass` | `examples/transformer-fragments/attn_softmax.mlir`；`examples/transformer-fragments/attn_context.mlir`；`examples/transformer-fragments/attention_block.mlir`；`ascend-compute-lower-gm-fill-scalar-loop.mlir`；`ascend-compute-lower-transpose-rank3-leading-swap.mlir`；`transformer-fragments.mlir`；手动 xvm runtime E2E confirmed |
 | xvm full transformer runtime E2E closure | RED confirmed full transformer `--runtime-e2e` 先后暴露通用缺口：Mix ABI extractor 跨函数扫描导致 dead input 被误判 live；explicit matmul tiling 不应要求 fused mix 只有 A/B/bias 输入；f32 CO1->VECIN `DataCopy` CANN overload 不可用；run manifest 可以保守列出原函数输入但 runtime launch ABI 必须按 mix artifact ABI 名称过滤；transformer 脚本缺少 DAV simulator default；同一 session 多个 mix dynamic library artifact 不能每次 `aclFinalize`；TBuf-backed LocalTensor 不能 EnQue/DeQue/FreeTensor 到普通 queue；prefixRank=0 exact GM projected copy 不应绕到 VECIN queue。fix 后这些能力均以通用 regression 覆盖：Mix ABI 按当前函数截断、tiling 按 explicit matmul 语义选择 A/B/可选 bias、non-f16 CO1->VECIN scalar fallback、runtime-session 按 ABI name 对齐 mix inputs、transformer 默认 `ASCEND_DAV_SIM_VERSION=dav_3002`、NativeExecutionRunner 复用 ACL init/device/stream、CANN translator bypass TBuf queue round-trip、exact GM copy 走 plain GM->GM `data_copy_l2`。最终 xvm `examples/transformer/run-mainline.sh --runtime-e2e --log` passed：53 个 kernel artifact 编译通过，run manifest 53 tasks，runtime-session sim `session.result=success` / `session.validation=pass`，并发 scheduler 下 `scheduler.task.succeeded=53` | `MixAbiTest` 7/7；`MixTilingGeneratorTest` 9/9；`transformer-fragments` LIT passed；`transformer-runtime-e2e` LIT passed；Conversion filtered LIT passed；Target LIT passed；`bash test/tools/runtime/run_runtime.sh` passed；手动 xvm transformer runtime E2E confirmed |
-| xvm transformer shape matrix expansion | RED confirmed full transformer `--runtime-e2e --batch 1 --seq 2` 卡在 `kernel_4 kind=mix` artifact compile，诊断为 in-process explicit `batch_matmul` tiling 只接受 A/B/C 第一维一致，随后 fallback 到只支持 2D 的 external `mix-tiling-helper`；fix 后 explicit batch-matmul tiling 以 output-leading batch 维推导问题规模，允许 B batch dim 为 1 或 output batch，并支持 LHS 物理布局为 `[batch, M, K]` 或 `[M, batch, K]`，同时保留 annotated `batchShape` 校验和 K/N 语义校验。最终 full transformer shape matrix 已从默认 `batch=1, seq=1` 扩到 `batch=1, seq=4`、`batch=1, seq=16`、`batch=2, seq=2`、`batch=2, seq=4`，均完成 53 个 artifact 编译、53-task runtime-session sim 和最终 `session.validation=pass`；shape matrix 已新增显式长跑 LIT gate，位于 `test/tools/longrun`，覆盖 `1x1`、`1x2`、`1x4`、`1x16`、`2x2`、`2x4`，需要 `AFIR_ENABLE_LONGRUN_TESTS=1` 才会启用，避免混入轻量 examples smoke | `MixTilingGeneratorTest` 10/10；`transformer_shape_matrix.sh` RED confirmed missing runner 后补齐；`TRANSFORMER_SHAPE_MATRIX_CASES=1x1` runner smoke passed；手动 xvm `examples/transformer/run-mainline.sh --runtime-e2e --batch 1 --seq 2 --log` passed；`--batch 1 --seq 4 --log` passed；`--batch 1 --seq 16 --log` passed；`--batch 2 --seq 2 --log` passed；`--batch 2 --seq 4 --log` passed |
-| xvm transformer kernel census gate | RED confirmed `transformer-kernel-census.mlir` 缺少 runner；fix 后新增 `test/tools/longrun/transformer_kernel_census.sh`，默认重新运行 full transformer `batch=1, seq=1` runtime E2E，并只读解析 artifact manifest、run manifest、kernelGraph 与 runtime profile markers，输出 kernel/task count、kind 分桶、root/leaf count、critical path depth、runtime input roots 与 prepack candidate roots。当前 census 显示 full transformer 为 53 kernels / 53 tasks / 47 graph edges，kind 分桶为 49 vec / 1 cube / 3 mix，root tasks 26，leaf tasks 16，critical path depth 11，runtime input root 1，prepack candidate roots 25 | RED `transformer-kernel-census.mlir` failed on missing runner；`TRANSFORMER_CENSUS_USE_EXISTING=1 bash test/tools/longrun/transformer_kernel_census.sh` passed；`AFIR_ENABLE_LONGRUN_TESTS=1 llvm-lit -v build/test/tools/longrun/transformer-kernel-census.mlir` 1/1 passed，Testing Time 105.62s |
+| xvm transformer shape matrix expansion | RED confirmed full transformer `--runtime-e2e --batch 1 --seq 2` 卡在 `kernel_4 kind=mix` artifact compile，诊断为 in-process explicit `batch_matmul` tiling 只接受 A/B/C 第一维一致，随后 fallback 到只支持 2D 的 external `mix-tiling-helper`；fix 后 explicit batch-matmul tiling 以 output-leading batch 维推导问题规模，允许 B batch dim 为 1 或 output batch，并支持 LHS 物理布局为 `[batch, M, K]` 或 `[M, batch, K]`，同时保留 annotated `batchShape` 校验和 K/N 语义校验。最终 full transformer shape matrix 已从默认 `batch=1, seq=1` 扩到 `batch=1, seq=4`、`batch=1, seq=16`、`batch=2, seq=2`、`batch=2, seq=4`，均完成 53 个 artifact 编译、53-task runtime-session sim 和最终 `session.validation=pass`；shape matrix 已新增显式长跑 LIT gate，位于 `test/tools/longrun`，覆盖 `1x1`、`1x2`、`1x4`、`1x16`、`2x2`、`2x4`，需要 `ASCEND_ENABLE_LONGRUN_TESTS=1` 才会启用，避免混入轻量 examples smoke | `MixTilingGeneratorTest` 10/10；`transformer_shape_matrix.sh` RED confirmed missing runner 后补齐；`TRANSFORMER_SHAPE_MATRIX_CASES=1x1` runner smoke passed；手动 xvm `examples/transformer/run-mainline.sh --runtime-e2e --batch 1 --seq 2 --log` passed；`--batch 1 --seq 4 --log` passed；`--batch 1 --seq 16 --log` passed；`--batch 2 --seq 2 --log` passed；`--batch 2 --seq 4 --log` passed |
+| xvm transformer kernel census gate | RED confirmed `transformer-kernel-census.mlir` 缺少 runner；fix 后新增 `test/tools/longrun/transformer_kernel_census.sh`，默认重新运行 full transformer `batch=1, seq=1` runtime E2E，并只读解析 artifact manifest、run manifest、kernelGraph 与 runtime profile markers，输出 kernel/task count、kind 分桶、root/leaf count、critical path depth、runtime input roots 与 prepack candidate roots。当前 census 显示 full transformer 为 53 kernels / 53 tasks / 47 graph edges，kind 分桶为 49 vec / 1 cube / 3 mix，root tasks 26，leaf tasks 16，critical path depth 11，runtime input root 1，prepack candidate roots 25 | RED `transformer-kernel-census.mlir` failed on missing runner；`TRANSFORMER_CENSUS_USE_EXISTING=1 bash test/tools/longrun/transformer_kernel_census.sh` passed；`ASCEND_ENABLE_LONGRUN_TESTS=1 llvm-lit -v build/test/tools/longrun/transformer-kernel-census.mlir` 1/1 passed，Testing Time 105.62s |
 | xvm unified debug graph / kernel DAG diagnostic | kernel DAG 能力已从独立 `ascend_kernel_dag_viz.py` 迁入统一 `ascend-debug` 诊断链路；`ascend-debug collect/open` 直接生成 kernel DAG summary/SVG、stage graph、unified debug graph workspace，并集中展示 tensor diff、locate、memory、artifacts；旧 standalone viz 脚本和对应 direct-tool LIT 已删除，覆盖迁入 `ascend-debug-cli` diagnostics | local `test_ascend_debug_cli.sh` passed；xvm `cmake --build build --target ascend-mlir-opt ascend-debug -j10` passed；xvm diagnostics LIT passed |
 
 ## Phase 6：文档与 Demo 收敛
@@ -710,7 +710,7 @@ Review / verification:
 | code review | 检查编译风险、API 风险、测试脆弱性 |
 | focused lit | 覆盖本任务新增行为 |
 | docker build | 在 xvm/docker 中构建相关 target |
-| regression | 至少跑 `check-afir` 或说明不可跑原因 |
+| regression | 至少跑 `check-ascend-conversion` 或说明不可跑原因 |
 | commit | 每个可 review 单元单独提交 |
 
 ## 当前下一步

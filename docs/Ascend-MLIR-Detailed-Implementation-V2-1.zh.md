@@ -108,7 +108,7 @@ flowchart TB
 - 与 upstream MLIR 保持最大兼容性，Pass 可以单独发布或选择性集成
 - 降低社区贡献门槛
 
-> **关于代码仓中的 AFIR Dialect**：AFIR 是历史原型实现阶段遗留的方言，不属于 V2 设计规范。V2 的所有 Pass 以社区 Dialect + 扩展 Attribute 为载体实现，不依赖 AFIR Dialect。
+> **关于代码仓中的历史前端方言**：历史原型阶段遗留的前端方言不属于 V2 设计规范。V2 的所有 Pass 以社区 Dialect + 扩展 Attribute 为载体实现，不依赖旧前端方言。
 
 #### 1.4.3 可扩展性预留
 

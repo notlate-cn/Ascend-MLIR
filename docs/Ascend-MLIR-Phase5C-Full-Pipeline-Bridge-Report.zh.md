@@ -5,7 +5,7 @@
 最小普通用例已经可以通过完整 `Phase 0 -> Phase 5` 新主线：
 
 ```bash
-afir-opt ordinary.mlir \
+ascend-mlir-opt ordinary.mlir \
   --ascend-normalize \
   --ascend-kernelize \
   --ascend-schedule \
@@ -16,7 +16,7 @@ afir-opt ordinary.mlir \
 target-aware 链路也已通过：
 
 ```bash
-afir-opt ordinary.mlir \
+ascend-mlir-opt ordinary.mlir \
   --ascend-normalize \
   --ascend-kernelize \
   --ascend-schedule \

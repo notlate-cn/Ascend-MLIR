@@ -1,5 +1,12 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
+// CHECK-NOT: utils/std/cmath.h
+// CHECK-NOT: adv_api/broadcast/broadcast.h
+// CHECK-NOT: adv_api/reduce/reduce.h
+// CHECK-NOT: ascendc_api_scalar_exp
+// CHECK-NOT: ascend_scalar_exp
+// CHECK-NOT: ascendc_api_scalar_rsqrt
+// CHECK-NOT: ascend_scalar_rsqrt
 // CHECK-LABEL: void add_l2_chunked
 // CHECK: uint32_t _ascend_add_count = static_cast<uint32_t>(
 // CHECK: for (uint32_t _ascend_off = 0; _ascend_off < _ascend_add_count; _ascend_off += 1024u) {

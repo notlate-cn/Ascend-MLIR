@@ -467,6 +467,19 @@ Phase 0 生成的 context 建立 op 在 Phase 3 Hoist 后已提升到 kernel 函
 
 翻译入口统一为 `AscendCSourceTranslationDriver`，只消费已完成 CANN 签名规整的 kernel function，不处理更早阶段的通用 MLIR。
 
+**AscendC API 扩展边界：**
+
+当官方 AscendC API 没有直接覆盖某个已选 lowering 需要的 helper 时，第五层可以输出项目自有的 AscendC API extension，但它必须是显式、可复用、可审计的 API 层，而不是 pass 内部散落的临时代码。
+
+历史参考材料是 GE autofuse 中的 `compiler/graph/optimize/autofuse/ascendc/api`：该目录把 `rsqrt.h`、`broadcast.h`、`reduce.h`、`scalar_*.h`、`datacopy.h` 等补充能力按 op family 拆分，并通过 `ascendc_api_extend` interface library 聚合。Ascend-MLIR 不直接复制这份实现；可借鉴的工程边界是：
+
+1. 每个补充能力必须有独立 API 名称和实现归属，例如 `ascendc_api_*` helper 或未来的 header-backed API extension。
+2. lowering 只引用稳定 API 名称，不把 helper 具体实现内联到调度、realize 或 debug 逻辑中。
+3. Source Translation 根据 kernel IR 中实际出现的 API 调用按需输出声明、定义和必要 header；无关 kernel 不应携带无关 helper 或 header。
+4. tensor-level extension（如历史 `RsqrtExtend`）和 scalar-level extension（如 scalar `math.rsqrt` fallback）必须作为不同 API 能力建模，不能因为名字相近而共享错误语义。
+5. `ascend-debug` 只消费生成后的 artifact / contract JSON / source view，不解析或复制这些 API helper 的内部语义。
+6. 该 extension 层属于 Ascend V2 / CANN target，不能重新耦合到历史前端兼容工具、命名或测试入口。
+
 #### 6.5.3 示例
 
 **输入（`AscendC Kernel MLIR` 片段）**：
@@ -637,7 +650,7 @@ Runtime 必须优先使用 `hostTilingBindings.symbols` 做显式 `dlsym`。`<Ke
 | `tilingSchema` 与 `tilingFields` 一一对应 | host 生成什么字段，kernel 按同样顺序读取什么字段       |
 | `ScheduleEntry` 只引用 schema 中已有字段  | 不允许 host/runtime 私自增加 kernel 不可见字段         |
 | `get_tiling(...)` 不运行搜索              | 只写入 prepare/offline 阶段已选好的参数，不在运行时搜索 |
-| `hostTilingBindings` 显式绑定符号         | Runtime 通过 manifest 中的 `library` 和 `symbols` 绑定 C ABI，不从 AFIR 工具或 MLIR symbol 反推 |
+| `hostTilingBindings` 显式绑定符号         | Runtime 通过 manifest 中的 `library` 和 `symbols` 绑定 C ABI，不从历史前端工具或 MLIR symbol 反推 |
 | `workspaceSizeExpr` 与 tiling 参数对齐    | 表达式中的变量名必须与 `tilingSchema` 中的参数名一致   |
 | `kernelGraph` 覆盖完整 DAG               | 凡第二层 `KernelPattern[]` DAG 中存在的边，必须全部出现在此字段 |
 | `kernelGraph` 只含 `CarriedValue` 边     | 第二层 `KernelPatternGraph` 有 7 种边类型（CarriedValue、Overlap、BranchPair、MergePair、MustCoLocate、MustSeparate、ScheduleBarrier），其中后 6 种在 Layer 2 内部调度决策阶段已完全消解，**不进入** Artifact Manifest；`kernelGraph.edges` 仅保留表达跨 kernel GM 数据流的 `CarriedValue` 类型边 |
@@ -845,7 +858,7 @@ int64_t <KernelName>_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_c
 
 | 规则 | 说明 |
 |---|---|
-| Host Tiling ABI Binding | Artifact Manifest 必须显式记录 `library` 和四个 `symbols`；这里的 symbol 是动态链接器符号，不是 MLIR symbol，也不依赖 AFIR 方言或 `afir-translate` 工具 |
+| Host Tiling ABI Binding | Artifact Manifest 必须显式记录 `library` 和四个 `symbols`；这里的 symbol 是动态链接器符号，不是 MLIR symbol，也不依赖历史前端方言或兼容翻译工具 |
 | `shape_args` 顺序 | 必须按 Artifact Manifest 的 `shapeArgOrder` 字段顺序排列；该字段由编译器根据 `HostTilingABI.abiArgs` 中 shape 维度参数的出现顺序自动生成，调用方不得自行推断顺序 |
 | `tiling_out` 大小 | 调用方通过 `GetTilingSize()` 获取大小后自行分配，避免 ABI 版本不一致导致的内存问题 |
 | `shape_count` 校验 | 若 `shape_count` 与预期不符，`GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 均返回错误 |

@@ -3,9 +3,9 @@
 // CHECK-LABEL: extern "C" __global__ __aicore__ void scalar_math(
 // CHECK-NOT: double
 // CHECK: constexpr float
-// CHECK: ascend_scalar_exp(
+// CHECK: ascendc_api_scalar_exp(
 // CHECK-NOT: AscendC::Exp
-// CHECK: ascend_scalar_rsqrt(
+// CHECK: ascendc_api_scalar_rsqrt(
 // CHECK-NOT: AscendC::Rsqrt
 
 module {
