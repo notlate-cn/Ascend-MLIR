@@ -3,7 +3,7 @@
 // Expected shape: one cube region, one boundary transfer/synchronization layer,
 // and one vector region in a single chained mix lowering path.
 // The vector shell is still emitted from region-local op iteration.
-// CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
+// CHECK: #define __ASCEND_RUNTIME_MIX_KERNEL_FUN_H__
 // CHECK: #define ASCENDC_CUBE_ONLY
 // CHECK: #include "kernel_operator.h"
 // CHECK: #include "lib/matmul_intf.h"

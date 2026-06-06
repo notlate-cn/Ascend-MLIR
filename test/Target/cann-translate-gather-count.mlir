@@ -1,18 +1,18 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void gather_count_uses_result_count
-// CHECK-NOT: _afir_idx32
-// CHECK: uint32_t _afir_gather_count = static_cast<uint32_t>(c16_i32);
-// CHECK: uint32_t _afir_gather_padded_count = _afir_gather_count == 0u ? 0u : ((_afir_gather_count + 127u) / 128u) * 128u;
-// CHECK: SetSize(_afir_gather_padded_count);
+// CHECK-NOT: _ascend_idx32
+// CHECK: uint32_t _ascend_gather_count = static_cast<uint32_t>(c16_i32);
+// CHECK: uint32_t _ascend_gather_padded_count = _ascend_gather_count == 0u ? 0u : ((_ascend_gather_count + 127u) / 128u) * 128u;
+// CHECK: SetSize(_ascend_gather_padded_count);
 // CHECK: SetSize((uint32_t)(c128_idx / 2u));
 // CHECK-NOT: AscendC::Gather(
-// CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_gather_count; ++_afir_i)
-// CHECK: uint32_t _afir_elem_offset = (static_cast<uint32_t>(
+// CHECK: for (uint32_t _ascend_i = 0; _ascend_i < _ascend_gather_count; ++_ascend_i)
+// CHECK: uint32_t _ascend_elem_offset = (static_cast<uint32_t>(
 // CHECK-SAME: / 2u) + static_cast<uint32_t>(
-// CHECK-SAME: .GetValue(_afir_i));
-// CHECK: SetValue(_afir_i,
-// CHECK-SAME: GetValue(_afir_elem_offset)
+// CHECK-SAME: .GetValue(_ascend_i));
+// CHECK: SetValue(_ascend_i,
+// CHECK-SAME: GetValue(_ascend_elem_offset)
 module {
   func.func @gather_count_uses_result_count(
       %arg0: memref<?xf16>,

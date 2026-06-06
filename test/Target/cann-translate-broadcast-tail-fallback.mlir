@@ -1,25 +1,25 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void broadcast_tail_fallback
-// CHECK: AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_bcast_src_tbuf_
-// CHECK: AscendC::LocalTensor<half> [[SRC0:_afir_bcast_src_[0-9]+]] =
-// CHECK: [[SRC0]].SetValue(_afir_i, static_cast<half>(
+// CHECK: AscendC::TBuf<AscendC::TPosition::VECCALC> _ascend_bcast_src_tbuf_
+// CHECK: AscendC::LocalTensor<half> [[SRC0:_ascend_bcast_src_[0-9]+]] =
+// CHECK: [[SRC0]].SetValue(_ascend_i, static_cast<half>(
 // CHECK: AscendC::PipeBarrier<PIPE_ALL>();
-// CHECK: if (_afir_ss[1] == 1u) {
-// CHECK: for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {
-// CHECK-NOT: afir_gm_load<half>
-// CHECK: auto _afir_v = [[SRC0]].GetValue(_afir_r);
-// CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
-// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u && ((_afir_ds[1] * sizeof(half)) % 32u) == 0u) {
-// CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
-// CHECK: uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < 1024u) ? (_afir_ds[1] - _afir_c) : 1024u;
-// CHECK: AscendC::Duplicate({{.*}}[_afir_row_offset + _afir_c], _afir_v, _afir_chunk);
-// CHECK: uint32_t _afir_vec_elems = 32u / sizeof(half);
-// CHECK: uint32_t _afir_tail_base = (_afir_chunk / _afir_vec_elems) * _afir_vec_elems;
-// CHECK: for (uint32_t _afir_t = _afir_tail_base; _afir_t < _afir_chunk; ++_afir_t)
-// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c + _afir_t, _afir_v);
+// CHECK: if (_ascend_ss[1] == 1u) {
+// CHECK: for (uint32_t _ascend_r = 0; _ascend_r < _ascend_ds[0]; ++_ascend_r) {
+// CHECK-NOT: ascend_gm_load<half>
+// CHECK: auto _ascend_v = [[SRC0]].GetValue(_ascend_r);
+// CHECK: uint32_t _ascend_row_offset = _ascend_r * _ascend_ds[1];
+// CHECK: if (((_ascend_row_offset * sizeof(half)) % 32u) == 0u && ((_ascend_ds[1] * sizeof(half)) % 32u) == 0u) {
+// CHECK: for (uint32_t _ascend_c = 0; _ascend_c < _ascend_ds[1]; _ascend_c += 1024u) {
+// CHECK: uint32_t _ascend_chunk = ((_ascend_ds[1] - _ascend_c) < 1024u) ? (_ascend_ds[1] - _ascend_c) : 1024u;
+// CHECK: AscendC::Duplicate({{.*}}[_ascend_row_offset + _ascend_c], _ascend_v, _ascend_chunk);
+// CHECK: uint32_t _ascend_vec_elems = 32u / sizeof(half);
+// CHECK: uint32_t _ascend_tail_base = (_ascend_chunk / _ascend_vec_elems) * _ascend_vec_elems;
+// CHECK: for (uint32_t _ascend_t = _ascend_tail_base; _ascend_t < _ascend_chunk; ++_ascend_t)
+// CHECK: {{.*}}.SetValue(_ascend_row_offset + _ascend_c + _ascend_t, _ascend_v);
 // CHECK: } else {
-// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
+// CHECK: {{.*}}.SetValue(_ascend_row_offset + _ascend_c, _ascend_v);
 // CHECK: } else {
 // CHECK: AscendC::Broadcast<half, 2, 1>
 // CHECK: AscendC::PipeBarrier<PIPE_ALL>();
@@ -53,24 +53,24 @@ module {
   }
 
 // CHECK-LABEL: void broadcast_full_tile_gm_fallback
-// CHECK: AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_bcast_src_tbuf_
-// CHECK: AscendC::LocalTensor<half> [[SRC1:_afir_bcast_src_[0-9]+]] =
-// CHECK: [[SRC1]].SetValue(_afir_i, static_cast<half>(
+// CHECK: AscendC::TBuf<AscendC::TPosition::VECCALC> _ascend_bcast_src_tbuf_
+// CHECK: AscendC::LocalTensor<half> [[SRC1:_ascend_bcast_src_[0-9]+]] =
+// CHECK: [[SRC1]].SetValue(_ascend_i, static_cast<half>(
 // CHECK: AscendC::PipeBarrier<PIPE_ALL>();
-// CHECK: if (_afir_ss[1] == 1u) {
-// CHECK-NOT: if (_afir_ds[0] < 16u
-// CHECK-NOT: afir_gm_load<half>
-// CHECK: auto _afir_v = [[SRC1]].GetValue(_afir_r);
-// CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
-// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u && ((_afir_ds[1] * sizeof(half)) % 32u) == 0u) {
-// CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
-// CHECK: AscendC::Duplicate({{.*}}[_afir_row_offset + _afir_c], _afir_v, _afir_chunk);
-// CHECK: uint32_t _afir_vec_elems = 32u / sizeof(half);
-// CHECK: uint32_t _afir_tail_base = (_afir_chunk / _afir_vec_elems) * _afir_vec_elems;
-// CHECK: for (uint32_t _afir_t = _afir_tail_base; _afir_t < _afir_chunk; ++_afir_t)
-// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c + _afir_t, _afir_v);
+// CHECK: if (_ascend_ss[1] == 1u) {
+// CHECK-NOT: if (_ascend_ds[0] < 16u
+// CHECK-NOT: ascend_gm_load<half>
+// CHECK: auto _ascend_v = [[SRC1]].GetValue(_ascend_r);
+// CHECK: uint32_t _ascend_row_offset = _ascend_r * _ascend_ds[1];
+// CHECK: if (((_ascend_row_offset * sizeof(half)) % 32u) == 0u && ((_ascend_ds[1] * sizeof(half)) % 32u) == 0u) {
+// CHECK: for (uint32_t _ascend_c = 0; _ascend_c < _ascend_ds[1]; _ascend_c += 1024u) {
+// CHECK: AscendC::Duplicate({{.*}}[_ascend_row_offset + _ascend_c], _ascend_v, _ascend_chunk);
+// CHECK: uint32_t _ascend_vec_elems = 32u / sizeof(half);
+// CHECK: uint32_t _ascend_tail_base = (_ascend_chunk / _ascend_vec_elems) * _ascend_vec_elems;
+// CHECK: for (uint32_t _ascend_t = _ascend_tail_base; _ascend_t < _ascend_chunk; ++_ascend_t)
+// CHECK: {{.*}}.SetValue(_ascend_row_offset + _ascend_c + _ascend_t, _ascend_v);
 // CHECK: } else {
-// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
+// CHECK: {{.*}}.SetValue(_ascend_row_offset + _ascend_c, _ascend_v);
 // CHECK: } else {
 // CHECK: AscendC::Broadcast<half, 2, 1>
 // CHECK: AscendC::PipeBarrier<PIPE_ALL>();

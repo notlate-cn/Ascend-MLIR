@@ -4,15 +4,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AFIR_TARGET_CANNKERNEL_RUNTIME_ARTIFACTS_H
-#define AFIR_TARGET_CANNKERNEL_RUNTIME_ARTIFACTS_H
+#ifndef ASCEND_TARGET_CANNKERNEL_RUNTIME_ARTIFACTS_H
+#define ASCEND_TARGET_CANNKERNEL_RUNTIME_ARTIFACTS_H
 
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
-namespace mlir::afir::cann {
+namespace mlir::ascend::cann {
 
 struct CannRuntimeArtifactOptions {
   StringRef kernelFile;
@@ -26,6 +26,6 @@ LogicalResult emitArtifactManifestJson(ModuleOp module, StringRef outPath,
 LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
                                 const CannRuntimeArtifactOptions &options);
 
-} // namespace mlir::afir::cann
+} // namespace mlir::ascend::cann
 
-#endif // AFIR_TARGET_CANNKERNEL_RUNTIME_ARTIFACTS_H
+#endif // ASCEND_TARGET_CANNKERNEL_RUNTIME_ARTIFACTS_H

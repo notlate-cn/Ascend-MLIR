@@ -1,7 +1,7 @@
 add_mlir_library(CannKernelTranslation
   CannTranslation.cpp
   CannRuntimeArtifacts.cpp
-  AfirOpEmitters.cpp
+  AscendOpEmitters.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include

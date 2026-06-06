@@ -1,4 +1,4 @@
-//===- AfirOpEmitters.h - Custom emitters for missing PyAsc ops --*- C++ -*-===//
+//===- AscendOpEmitters.h - Custom emitters for missing PyAsc ops --*- C++ -*-===//
 //
 // Part of the Ascend-MLIR Project
 //
@@ -13,21 +13,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AFIR_TARGET_CANNKERNEL_AFIROPEMITTERS_H
-#define AFIR_TARGET_CANNKERNEL_AFIROPEMITTERS_H
+#ifndef ASCEND_TARGET_CANNKERNEL_ASCENDOPEMITTERS_H
+#define ASCEND_TARGET_CANNKERNEL_ASCENDOPEMITTERS_H
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Target/Asc/CodeEmitter.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
-/// Try to emit `op` using the AFIR-local emitters.
+/// Try to emit `op` using the Ascend-local emitters.
 /// Returns success if `op` was handled, failure if the op is not one of the
 /// locally-handled ops and the caller should fall back to PyAsc emitOperation.
-mlir::LogicalResult tryEmitAfirOp(CodeEmitter &emitter, mlir::Operation &op);
+mlir::LogicalResult tryEmitAscendOp(CodeEmitter &emitter, mlir::Operation &op);
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
-#endif // AFIR_TARGET_CANNKERNEL_AFIROPEMITTERS_H
+#endif // ASCEND_TARGET_CANNKERNEL_ASCENDOPEMITTERS_H

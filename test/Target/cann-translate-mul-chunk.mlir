@@ -1,11 +1,11 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void mul_l2_inplace_chunked
-// CHECK: uint32_t _afir_mul_count = static_cast<uint32_t>(
-// CHECK: for (uint32_t _afir_off = 0; _afir_off < _afir_mul_count; _afir_off += 1024u) {
-// CHECK: uint32_t _afir_chunk = ((_afir_mul_count - _afir_off) < 1024u) ? (_afir_mul_count - _afir_off) : 1024u;
-// CHECK: AscendC::Mul({{.*}}[_afir_off], {{.*}}[_afir_off], {{.*}}[_afir_off], _afir_chunk);
-// CHECK: SetSize(_afir_mul_count);
+// CHECK: uint32_t _ascend_mul_count = static_cast<uint32_t>(
+// CHECK: for (uint32_t _ascend_off = 0; _ascend_off < _ascend_mul_count; _ascend_off += 1024u) {
+// CHECK: uint32_t _ascend_chunk = ((_ascend_mul_count - _ascend_off) < 1024u) ? (_ascend_mul_count - _ascend_off) : 1024u;
+// CHECK: AscendC::Mul({{.*}}[_ascend_off], {{.*}}[_ascend_off], {{.*}}[_ascend_off], _ascend_chunk);
+// CHECK: SetSize(_ascend_mul_count);
 module {
   func.func @mul_l2_inplace_chunked(
       %arg0: memref<?xf16>,
@@ -25,7 +25,7 @@ module {
   }
 
   // CHECK-LABEL: void mul_l2_out_of_place_direct
-  // CHECK-NOT: _afir_mul_count
+  // CHECK-NOT: _ascend_mul_count
   // CHECK: AscendC::Mul({{[^[]*}}, {{[^[]*}}, {{[^[]*}}, {{.*}});
   func.func @mul_l2_out_of_place_direct(
       %arg0: memref<?xf16>,

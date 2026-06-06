@@ -136,7 +136,7 @@ pattern = re.compile(
 def replace(match):
     return (
         f"{match.group(1)}// post-add checkpoint: keep the Add accumulator.\n"
-        f"{match.group(1)}(void)_afir_chunk;\n"
+        f"{match.group(1)}(void)_ascend_chunk;\n"
     )
 
 patched, count = pattern.subn(replace, text)

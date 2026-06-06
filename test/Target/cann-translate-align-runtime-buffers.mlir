@@ -1,12 +1,12 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void align_runtime_buffers
-// CHECK: uint32_t _afir_bytes = static_cast<uint32_t>(c12_idx);
-// CHECK: uint32_t _afir_aligned_bytes = _afir_bytes == 0 ? 0 : ((_afir_bytes + 31u) / 32u) * 32u;
-// CHECK: if (_afir_aligned_bytes < 32u)
-// CHECK-NEXT: _afir_aligned_bytes = 32u;
-// CHECK: InitBuffer({{.*}}, _afir_aligned_bytes);
-// CHECK: InitBuffer({{.*}}, c1_i32, _afir_aligned_bytes);
+// CHECK: uint32_t _ascend_bytes = static_cast<uint32_t>(c12_idx);
+// CHECK: uint32_t _ascend_aligned_bytes = _ascend_bytes == 0 ? 0 : ((_ascend_bytes + 31u) / 32u) * 32u;
+// CHECK: if (_ascend_aligned_bytes < 32u)
+// CHECK-NEXT: _ascend_aligned_bytes = 32u;
+// CHECK: InitBuffer({{.*}}, _ascend_aligned_bytes);
+// CHECK: InitBuffer({{.*}}, c1_i32, _ascend_aligned_bytes);
 
 module {
   func.func @align_runtime_buffers(

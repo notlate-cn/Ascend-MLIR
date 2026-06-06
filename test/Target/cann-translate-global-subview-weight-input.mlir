@@ -1,4 +1,4 @@
-// RUN: afir-opt --ascend-prepare-for-emit --ascend-canonicalize-cann-signature %s | ascend-mlir-translate -mlir-to-cann - | FileCheck %s
+// RUN: ascend-mlir-opt --ascend-prepare-for-emit --ascend-canonicalize-cann-signature %s | ascend-mlir-translate -mlir-to-cann - | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void global_subview_weight(
 // CHECK: GM_ADDR

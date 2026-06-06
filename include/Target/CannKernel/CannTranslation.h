@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AFIR_TARGET_CANNKERNEL_CANNTRANSLATION_H
-#define AFIR_TARGET_CANNKERNEL_CANNTRANSLATION_H
+#ifndef ASCEND_TARGET_CANNKERNEL_CANNTRANSLATION_H
+#define ASCEND_TARGET_CANNKERNEL_CANNTRANSLATION_H
 
 #include "mlir/IR/Operation.h"
 #include "llvm/Support/raw_ostream.h"
@@ -34,4 +34,4 @@ LogicalResult translateToCannKernel(Operation *op, raw_ostream &os,
                                     StringRef kernelFile = "");
 } // namespace mlir
 
-#endif // AFIR_TARGET_CANNKERNEL_CANNTRANSLATION_H
+#endif // ASCEND_TARGET_CANNKERNEL_CANNTRANSLATION_H

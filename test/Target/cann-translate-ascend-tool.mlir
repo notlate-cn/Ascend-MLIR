@@ -2,6 +2,7 @@
 // RUN: FileCheck %s --input-file=%t.cpp --check-prefix=CPP
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
 // RUN: FileCheck %s --input-file=%t.host.cpp --check-prefix=HOST
+// RUN: not grep -E 'AFIR|Afir|afir|_afir' %t.cpp
 
 // CPP: extern "C" __global__ __aicore__ void add_kernel
 // MANIFEST: "kernelName": "add_kernel"

@@ -1,11 +1,11 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void add_l2_chunked
-// CHECK: uint32_t _afir_add_count = static_cast<uint32_t>(
-// CHECK: for (uint32_t _afir_off = 0; _afir_off < _afir_add_count; _afir_off += 1024u) {
-// CHECK: uint32_t _afir_chunk = ((_afir_add_count - _afir_off) < 1024u) ? (_afir_add_count - _afir_off) : 1024u;
-// CHECK: AscendC::Add({{.*}}[_afir_off], {{.*}}[_afir_off], {{.*}}[_afir_off], _afir_chunk);
-// CHECK: SetSize(_afir_add_count);
+// CHECK: uint32_t _ascend_add_count = static_cast<uint32_t>(
+// CHECK: for (uint32_t _ascend_off = 0; _ascend_off < _ascend_add_count; _ascend_off += 1024u) {
+// CHECK: uint32_t _ascend_chunk = ((_ascend_add_count - _ascend_off) < 1024u) ? (_ascend_add_count - _ascend_off) : 1024u;
+// CHECK: AscendC::Add({{.*}}[_ascend_off], {{.*}}[_ascend_off], {{.*}}[_ascend_off], _ascend_chunk);
+// CHECK: SetSize(_ascend_add_count);
 module {
   func.func @add_l2_chunked(
       %arg0: memref<?xf16>,

@@ -2,8 +2,8 @@
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void zero_subview(
 // CHECK-NOT: reinterpret_cast<float*>
-// CHECK: float {{v[0-9]+}} = afir_gm_load<float>(
-// CHECK: afir_gm_store<float>(
+// CHECK: float {{v[0-9]+}} = ascend_gm_load<float>(
+// CHECK: ascend_gm_store<float>(
 
 module {
   func.func @zero_subview(

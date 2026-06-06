@@ -1,12 +1,12 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void co12dst_f32_scalar
-// CHECK: uint32_t _afir_count = (uint32_t)(
+// CHECK: uint32_t _ascend_count = (uint32_t)(
 // CHECK-SAME: / sizeof(float)
-// CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)
-// CHECK: SetValue(_afir_i,
-// CHECK-SAME: GetValue(_afir_i)
-// CHECK: SetSize(_afir_count)
+// CHECK: for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)
+// CHECK: SetValue(_ascend_i,
+// CHECK-SAME: GetValue(_ascend_i)
+// CHECK: SetSize(_ascend_count)
 // CHECK-NOT: AscendC::DataCopy(
 
 module {

@@ -1,10 +1,10 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void global_bracket_dst_copy(
-// CHECK: AscendC::GlobalTensor<half> _afir_gt;
-// CHECK: _afir_gt.SetGlobalBuffer(
+// CHECK: AscendC::GlobalTensor<half> _ascend_gt;
+// CHECK: _ascend_gt.SetGlobalBuffer(
 // CHECK-SAME: GetPhyAddr(
-// CHECK: AscendC::DataCopy(_afir_gt,
+// CHECK: AscendC::DataCopy(_ascend_gt,
 
 module {
   func.func @global_bracket_dst_copy(

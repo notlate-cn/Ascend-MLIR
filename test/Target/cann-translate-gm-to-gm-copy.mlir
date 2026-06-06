@@ -1,15 +1,15 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void gm_to_gm_copy(
-// CHECK: uint32_t _afir_count = (uint32_t)
+// CHECK: uint32_t _ascend_count = (uint32_t)
 // CHECK-NOT: AscendC::DataCopy(
-// CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)
-// CHECK: {{v[0-9]+}}.SetValue(_afir_i, {{v[0-9]+}}.GetValue(_afir_i));
+// CHECK: for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)
+// CHECK: {{v[0-9]+}}.SetValue(_ascend_i, {{v[0-9]+}}.GetValue(_ascend_i));
 // CHECK-LABEL: extern "C" __global__ __aicore__ void gm_to_gm_subview_copy(
 // CHECK: GM_ADDR [[IN:v[0-9]+]],
 // CHECK-NOT: float* {{v[0-9]+}} =
 // CHECK: SetGlobalBuffer(reinterpret_cast<__gm__ float*>([[IN]]) + {{.*}});
-// CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)
+// CHECK: for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)
 
 module {
   func.func @gm_to_gm_copy(

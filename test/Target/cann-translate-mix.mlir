@@ -9,7 +9,7 @@
 // is expected to follow only the selected cube chain that feeds the boundary.
 // Generic single-chain validation must still accept this shape while the
 // vector region is walked op-by-op by the emitter.
-// CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
+// CHECK: #define __ASCEND_RUNTIME_MIX_KERNEL_FUN_H__
 // CHECK: #define ASCENDC_CUBE_ONLY
 // CHECK: #include "kernel_operator.h"
 // CHECK: #include "lib/matmul_intf.h"

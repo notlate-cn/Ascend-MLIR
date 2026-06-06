@@ -3,9 +3,9 @@
 // CHECK-LABEL: void reduce_scalar_barrier
 // CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK-NEXT: {
-// CHECK: float _afir_acc = 0.0f;
-// CHECK: _afir_acc += static_cast<float>({{.*}}.GetValue(_afir_offset));
-// CHECK: {{.*}}.SetValue(_afir_r, static_cast<half>(_afir_acc));
+// CHECK: float _ascend_acc = 0.0f;
+// CHECK: _ascend_acc += static_cast<float>({{.*}}.GetValue(_ascend_offset));
+// CHECK: {{.*}}.SetValue(_ascend_r, static_cast<half>(_ascend_acc));
 
 module {
   func.func @reduce_scalar_barrier(

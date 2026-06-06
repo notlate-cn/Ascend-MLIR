@@ -1,4 +1,4 @@
-//===- AfirOpEmitters.cpp - Custom emitters for missing PyAsc ops ---------===//
+//===- AscendOpEmitters.cpp - Custom emitters for missing PyAsc ops ---------===//
 //
 // Part of the Ascend-MLIR Project
 //
@@ -23,7 +23,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Target/CannKernel/AfirOpEmitters.h"
+#include "Target/CannKernel/AscendOpEmitters.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Target/Asc/CodeEmitter.h"
 #include "ascir/Target/Asc/Common.h"
@@ -41,9 +41,9 @@ using namespace mlir;
 //
 // Emits:
 //   {
-//     uint32_t afir_dstShape[2] = {(uint32_t)ds0, (uint32_t)ds1};
-//     uint32_t afir_srcShape[2] = {(uint32_t)ss0, (uint32_t)ss1};
-//     AscendC::Broadcast<half, 2, 0>(dst, src, afir_dstShape, afir_srcShape);
+//     uint32_t ascend_dstShape[2] = {(uint32_t)ds0, (uint32_t)ds1};
+//     uint32_t ascend_srcShape[2] = {(uint32_t)ss0, (uint32_t)ss1};
+//     AscendC::Broadcast<half, 2, 0>(dst, src, ascend_dstShape, ascend_srcShape);
 //   }
 //
 // axis=0 means "broadcast along first axis", which matches our AR (rows→cols)
@@ -57,9 +57,13 @@ static LogicalResult emitBroadcastL2Op(CodeEmitter &emitter,
   // Build unique names for the shape arrays to avoid collisions in the same
   // scope (multiple broadcast ops can appear in one function body).
   std::string dstArrName =
-      "afir_dstShape_" + std::to_string(reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
+      "ascend_dstShape_" +
+      std::to_string(
+          reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
   std::string srcArrName =
-      "afir_srcShape_" + std::to_string(reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
+      "ascend_srcShape_" +
+      std::to_string(
+          reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
 
   // Emit a scoped block so the local arrays don't leak.
   os << "{\n";
@@ -68,7 +72,8 @@ static LogicalResult emitBroadcastL2Op(CodeEmitter &emitter,
   os << "uint32_t " << dstArrName << "[" << rank << "] = {";
   auto dstShapes = op.getDstShape();
   for (unsigned i = 0; i < rank; ++i) {
-    if (i) os << ", ";
+    if (i)
+      os << ", ";
     os << "(uint32_t)" << emitter.getOrCreateName(dstShapes[i]);
   }
   os << "};\n";
@@ -76,7 +81,8 @@ static LogicalResult emitBroadcastL2Op(CodeEmitter &emitter,
   os << "uint32_t " << srcArrName << "[" << rank << "] = {";
   auto srcShapes = op.getSrcShape();
   for (unsigned i = 0; i < rank; ++i) {
-    if (i) os << ", ";
+    if (i)
+      os << ", ";
     os << "(uint32_t)" << emitter.getOrCreateName(srcShapes[i]);
   }
   os << "};\n";
@@ -130,12 +136,13 @@ static LogicalResult emitBroadcastL2Op(CodeEmitter &emitter,
 //
 // Emits:
 //   {
-//     uint32_t afir_shape[2] = {
+//     uint32_t ascend_shape[2] = {
 //         (uint32_t)(dst.GetSize() / sizeof(half)),
 //         (uint32_t)(src.GetSize() / dst.GetSize()) };
-//     AscendC::LocalTensor<uint8_t> afir_tmp;
-//     AscendC::PopStackBuffer<uint8_t, AscendC::TPosition::LCM>(afir_tmp);
-//     AscendC::ReduceSum<half, AscendC::AR>(dst, src, afir_tmp, afir_shape, false);
+//     AscendC::LocalTensor<uint8_t> ascend_tmp;
+//     AscendC::PopStackBuffer<uint8_t, AscendC::TPosition::LCM>(ascend_tmp);
+//     AscendC::ReduceSum<half, AscendC::AR>(
+//         dst, src, ascend_tmp, ascend_shape, false);
 //   }
 //
 static LogicalResult emitReduceSum2DL2Op(CodeEmitter &emitter,
@@ -146,9 +153,13 @@ static LogicalResult emitReduceSum2DL2Op(CodeEmitter &emitter,
       (op.getLayout() == ascendc::ReduceLayout::AR) ? "AR" : "RA";
 
   std::string shapeArr =
-      "afir_shape_" + std::to_string(reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
+      "ascend_shape_" +
+      std::to_string(
+          reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
   std::string tmpTensor =
-      "afir_tmp_" + std::to_string(reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
+      "ascend_tmp_" +
+      std::to_string(
+          reinterpret_cast<uintptr_t>(op->getLoc().getAsOpaquePointer()));
 
   std::string dstName = emitter.getOrCreateName(op.getDst()).str();
   std::string srcName = emitter.getOrCreateName(op.getSrc()).str();
@@ -168,9 +179,8 @@ static LogicalResult emitReduceSum2DL2Op(CodeEmitter &emitter,
      << ascNamespace << "::TPosition::LCM>(" << tmpTensor << ");\n";
 
   os << ascNamespace << "::ReduceSum<half, "
-     << ascNamespace << "::" << patternStr << ">("
-     << dstName << ", " << srcName << ", "
-     << tmpTensor << ", " << shapeArr << ", false)";
+     << ascNamespace << "::" << patternStr << ">(" << dstName << ", "
+     << srcName << ", " << tmpTensor << ", " << shapeArr << ", false)";
 
   os.unindent();
   os << "\n}";
@@ -179,8 +189,8 @@ static LogicalResult emitReduceSum2DL2Op(CodeEmitter &emitter,
 
 // ─── Public entry point ─────────────────────────────────────────────────────
 
-mlir::LogicalResult mlir::afir::tryEmitAfirOp(CodeEmitter &emitter,
-                                               mlir::Operation &op) {
+mlir::LogicalResult mlir::ascend::tryEmitAscendOp(CodeEmitter &emitter,
+                                                  mlir::Operation &op) {
   if (auto broadcastOp = dyn_cast<ascendc::BroadcastL2Op>(&op))
     return emitBroadcastL2Op(emitter, broadcastOp);
   if (auto reduceOp = dyn_cast<ascendc::ReduceSum2DL2Op>(&op))

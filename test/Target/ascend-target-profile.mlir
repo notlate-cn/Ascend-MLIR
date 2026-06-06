@@ -1,5 +1,5 @@
 // REQUIRES: ascend_env
-// RUN: afir-opt --ascend-print-target-profile='soc=Ascend910B2 cann-root=%cann_root' %s 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt --ascend-print-target-profile='soc=Ascend910B2 cann-root=%cann_root' %s 2>&1 | FileCheck %s
 
 module {}
 

@@ -2703,7 +2703,7 @@ static void deduplicateConstantsForEmission(Operation *op) {
 
 static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
   if (includeMixSupport) {
-    os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n";
+    os << "#define __ASCEND_RUNTIME_MIX_KERNEL_FUN_H__\n\n";
     os << "#define ASCENDC_CUBE_ONLY\n";
   }
   os << "#include \"kernel_operator.h\"\n";
@@ -2719,19 +2719,19 @@ static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
   if (includeMixSupport) {
     os << "using namespace AscendC;\n";
     os << "using namespace matmul;\n\n";
-    os << "constexpr MatmulConfig AFIR_BATCH_MATMUL_CFG = "
+    os << "constexpr MatmulConfig ASCEND_BATCH_MATMUL_CFG = "
           "GetNormalConfig(false, true);\n\n";
     emitSupportedMixCopyTilingHelper(os);
   }
   os << "template <typename T>\n";
-  os << "__aicore__ inline T afir_gm_load(GM_ADDR base, uint64_t offset) {\n";
+  os << "__aicore__ inline T ascend_gm_load(GM_ADDR base, uint64_t offset) {\n";
   os << "  return reinterpret_cast<__gm__ T *>(base)[offset];\n";
   os << "}\n\n";
   os << "template <typename T>\n";
-  os << "__aicore__ inline void afir_gm_store(GM_ADDR base, uint64_t offset, T value) {\n";
+  os << "__aicore__ inline void ascend_gm_store(GM_ADDR base, uint64_t offset, T value) {\n";
   os << "  reinterpret_cast<__gm__ T *>(base)[offset] = value;\n";
   os << "}\n\n";
-  os << "__aicore__ inline float afir_scalar_exp(float x) {\n";
+  os << "__aicore__ inline float ascend_scalar_exp(float x) {\n";
   os << "  if (x < -20.0f) return 0.0f;\n";
   os << "  if (x > 20.0f) x = 20.0f;\n";
   os << "  constexpr float inv_ln2 = 1.4426950408889634f;\n";
@@ -2750,7 +2750,7 @@ static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
   os << "  }\n";
   os << "  return y;\n";
   os << "}\n\n";
-  os << "__aicore__ inline float afir_scalar_rsqrt(float x) {\n";
+  os << "__aicore__ inline float ascend_scalar_rsqrt(float x) {\n";
   os << "  return 1.0f / AscendC::Std::sqrt(x);\n";
   os << "}\n\n";
 }
@@ -2763,7 +2763,7 @@ static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
 // reinterpret_cast<uint64_t> and for ReduceSum2DL2Op uses the non-existent
 // AscendC::ReduceLayout enum.  Both ops live in nested SCF regions that are
 // recursively emitted by PyAsc's internal emitOperation() – meaning our
-// top-level tryEmitAfirOp hook never reaches them.
+// top-level tryEmitAscendOp hook never reaches them.
 //
 // Solution: before calling the emitter, walk every occurrence of these ops and
 // replace each one with an emitasc.verbatim that produces the correct C++.
@@ -3350,7 +3350,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     std::string elemTypeStr = getAscendCScalarTypeName(op.getType());
     auto call = rewriter.create<emitasc::CallOpaqueOp>(
         op.getLoc(), op.getType(),
-        rewriter.getStringAttr("afir_gm_load<" + elemTypeStr + ">"),
+        rewriter.getStringAttr("ascend_gm_load<" + elemTypeStr + ">"),
         ValueRange({peelPointerOffsetSource(op.getMemref()), effectiveIndex}));
     rewriter.replaceOp(op, call.getResult());
   }
@@ -3372,7 +3372,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         getAscendCScalarTypeName(memrefType.getElementType());
     rewriter.create<emitasc::CallOpaqueOp>(
         op.getLoc(), TypeRange{},
-        rewriter.getStringAttr("afir_gm_store<" + elemTypeStr + ">"),
+        rewriter.getStringAttr("ascend_gm_store<" + elemTypeStr + ">"),
         ValueRange({peelPointerOffsetSource(op.getMemref()), effectiveIndex,
                     op.getValueToStore()}));
     rewriter.eraseOp(op);
@@ -3418,11 +3418,11 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.replaceOp(op, call.getResult());
   };
   moduleOp->walk([&](math::ExpOp op) {
-    lowerScalarUnaryMath(op, op.getOperand(), op.getType(), "afir_scalar_exp");
+    lowerScalarUnaryMath(op, op.getOperand(), op.getType(), "ascend_scalar_exp");
   });
   moduleOp->walk([&](math::RsqrtOp op) {
     lowerScalarUnaryMath(op, op.getOperand(), op.getType(),
-                         "afir_scalar_rsqrt");
+                         "ascend_scalar_rsqrt");
   });
   eraseDeadCastOps();
 
@@ -3473,11 +3473,11 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     std::string elemTypeStr = getAscendCScalarTypeName(dstType.getElementType());
     std::string tmpl = "{\n";
     tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
-    tmpl += "  for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($2); ++_afir_i) {\n";
-    tmpl += "    " + elemTypeStr + " _afir_r = $3.GetValue(_afir_i);\n";
-    tmpl += "    auto _afir_l = $1.GetValue(_afir_i);\n";
-    tmpl += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
-            ">(static_cast<float>(_afir_l) + static_cast<float>(_afir_r)));\n";
+    tmpl += "  for (uint32_t _ascend_i = 0; _ascend_i < static_cast<uint32_t>($2); ++_ascend_i) {\n";
+    tmpl += "    " + elemTypeStr + " _ascend_r = $3.GetValue(_ascend_i);\n";
+    tmpl += "    auto _ascend_l = $1.GetValue(_ascend_i);\n";
+    tmpl += "    $0.SetValue(_ascend_i, static_cast<" + elemTypeStr +
+            ">(static_cast<float>(_ascend_l) + static_cast<float>(_ascend_r)));\n";
     tmpl += "  }\n";
     tmpl += "  $0.SetSize((uint32_t)$2);\n";
     tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n}";
@@ -3491,15 +3491,15 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_add_count = static_cast<uint32_t>($3);\n";
-    tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_add_count; "
-            "_afir_off += 1024u) {\n";
-    tmpl += "    uint32_t _afir_chunk = ((_afir_add_count - _afir_off) < "
-            "1024u) ? (_afir_add_count - _afir_off) : 1024u;\n";
-    tmpl += "    AscendC::Add($0[_afir_off], $1[_afir_off], $2[_afir_off], "
-            "_afir_chunk);\n";
+    tmpl += "  uint32_t _ascend_add_count = static_cast<uint32_t>($3);\n";
+    tmpl += "  for (uint32_t _ascend_off = 0; _ascend_off < _ascend_add_count; "
+            "_ascend_off += 1024u) {\n";
+    tmpl += "    uint32_t _ascend_chunk = ((_ascend_add_count - _ascend_off) < "
+            "1024u) ? (_ascend_add_count - _ascend_off) : 1024u;\n";
+    tmpl += "    AscendC::Add($0[_ascend_off], $1[_ascend_off], $2[_ascend_off], "
+            "_ascend_chunk);\n";
     tmpl += "  }\n";
-    tmpl += "  $0.SetSize(_afir_add_count);\n}";
+    tmpl += "  $0.SetSize(_ascend_add_count);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), op.getSrc0(), op.getSrc1(),
@@ -3514,15 +3514,15 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_mul_count = static_cast<uint32_t>($3);\n";
-    tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_mul_count; "
-            "_afir_off += 1024u) {\n";
-    tmpl += "    uint32_t _afir_chunk = ((_afir_mul_count - _afir_off) < "
-            "1024u) ? (_afir_mul_count - _afir_off) : 1024u;\n";
-    tmpl += "    AscendC::Mul($0[_afir_off], $1[_afir_off], $2[_afir_off], "
-            "_afir_chunk);\n";
+    tmpl += "  uint32_t _ascend_mul_count = static_cast<uint32_t>($3);\n";
+    tmpl += "  for (uint32_t _ascend_off = 0; _ascend_off < _ascend_mul_count; "
+            "_ascend_off += 1024u) {\n";
+    tmpl += "    uint32_t _ascend_chunk = ((_ascend_mul_count - _ascend_off) < "
+            "1024u) ? (_ascend_mul_count - _ascend_off) : 1024u;\n";
+    tmpl += "    AscendC::Mul($0[_ascend_off], $1[_ascend_off], $2[_ascend_off], "
+            "_ascend_chunk);\n";
     tmpl += "  }\n";
-    tmpl += "  $0.SetSize(_afir_mul_count);\n}";
+    tmpl += "  $0.SetSize(_ascend_mul_count);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), op.getSrc0(), op.getSrc1(),
@@ -3552,11 +3552,11 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     Location loc = op.getLoc();
     std::string elemTypeStr = getAscendCScalarTypeName(elemType);
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_count = (uint32_t)($2 / sizeof(" +
+    tmpl += "  uint32_t _ascend_count = (uint32_t)($2 / sizeof(" +
             elemTypeStr + "));\n";
-    tmpl += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-    tmpl += "    $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n";
-    tmpl += "  $0.SetSize(_afir_count);\n}";
+    tmpl += "  for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+    tmpl += "    $0.SetValue(_ascend_i, $1.GetValue(_ascend_i));\n";
+    tmpl += "  $0.SetSize(_ascend_count);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), op.getSrc(), byteLength}));
@@ -3590,16 +3590,16 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = "{\n";
-    tmpl += "  AscendC::GlobalTensor<" + elemTypeStr + "> _afir_gt;\n";
-    tmpl += "  _afir_gt.SetGlobalBuffer($1.GetPhyAddr($2));\n";
-    tmpl += "  uint32_t _afir_count = (uint32_t)$3;\n";
-    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
-    tmpl += "    AscendC::DataCopy($0, _afir_gt, _afir_count);\n";
+    tmpl += "  AscendC::GlobalTensor<" + elemTypeStr + "> _ascend_gt;\n";
+    tmpl += "  _ascend_gt.SetGlobalBuffer($1.GetPhyAddr($2));\n";
+    tmpl += "  uint32_t _ascend_count = (uint32_t)$3;\n";
+    tmpl += "  if ((_ascend_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy($0, _ascend_gt, _ascend_count);\n";
     tmpl += "  } else {\n";
-    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-    tmpl += "      $0.SetValue(_afir_i, _afir_gt.GetValue(_afir_i));\n";
+    tmpl += "    for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+    tmpl += "      $0.SetValue(_ascend_i, _ascend_gt.GetValue(_ascend_i));\n";
     tmpl += "  }\n";
-    tmpl += "  $0.SetSize(_afir_count);\n}";
+    tmpl += "  $0.SetSize(_ascend_count);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), bracketOp.getTensor(), bracketOp.getIndex(),
@@ -3630,14 +3630,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = "{\n";
-    tmpl += "  AscendC::GlobalTensor<" + elemTypeStr + "> _afir_gt;\n";
-    tmpl += "  _afir_gt.SetGlobalBuffer($0.GetPhyAddr($1));\n";
-    tmpl += "  uint32_t _afir_count = (uint32_t)$3;\n";
-    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
-    tmpl += "    AscendC::DataCopy(_afir_gt, $2, _afir_count);\n";
+    tmpl += "  AscendC::GlobalTensor<" + elemTypeStr + "> _ascend_gt;\n";
+    tmpl += "  _ascend_gt.SetGlobalBuffer($0.GetPhyAddr($1));\n";
+    tmpl += "  uint32_t _ascend_count = (uint32_t)$3;\n";
+    tmpl += "  if ((_ascend_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy(_ascend_gt, $2, _ascend_count);\n";
     tmpl += "  } else {\n";
-    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-    tmpl += "      _afir_gt.SetValue(_afir_i, $2.GetValue(_afir_i));\n";
+    tmpl += "    for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+    tmpl += "      _ascend_gt.SetValue(_ascend_i, $2.GetValue(_ascend_i));\n";
     tmpl += "  }\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
@@ -3659,9 +3659,9 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_count = (uint32_t)$2;\n";
-    tmpl += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-    tmpl += "    $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n}";
+    tmpl += "  uint32_t _ascend_count = (uint32_t)$2;\n";
+    tmpl += "  for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+    tmpl += "    $0.SetValue(_ascend_i, $1.GetValue(_ascend_i));\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
@@ -3681,14 +3681,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_count = (uint32_t)$2;\n";
-    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
-    tmpl += "    AscendC::DataCopy($0, $1, _afir_count);\n";
+    tmpl += "  uint32_t _ascend_count = (uint32_t)$2;\n";
+    tmpl += "  if ((_ascend_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy($0, $1, _ascend_count);\n";
     tmpl += "  } else {\n";
-    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-    tmpl += "      $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n";
+    tmpl += "    for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+    tmpl += "      $0.SetValue(_ascend_i, $1.GetValue(_ascend_i));\n";
     tmpl += "  }\n";
-    tmpl += "  $0.SetSize(_afir_count);\n}";
+    tmpl += "  $0.SetSize(_ascend_count);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
@@ -3707,12 +3707,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_count = (uint32_t)$2;\n";
-    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
-    tmpl += "    AscendC::DataCopy($0, $1, _afir_count);\n";
+    tmpl += "  uint32_t _ascend_count = (uint32_t)$2;\n";
+    tmpl += "  if ((_ascend_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy($0, $1, _ascend_count);\n";
     tmpl += "  } else {\n";
-    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-    tmpl += "      $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n";
+    tmpl += "    for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+    tmpl += "      $0.SetValue(_ascend_i, $1.GetValue(_ascend_i));\n";
     tmpl += "  }\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
@@ -3730,13 +3730,13 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     // Build verbatim string with $N placeholders.
     // Operand layout: $0=dst, $1=src, $2..$2+rank-1=dstShape, $2+rank..=srcShape
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_ds[" + std::to_string(rank) + "] = {";
+    tmpl += "  uint32_t _ascend_ds[" + std::to_string(rank) + "] = {";
     for (uint32_t i = 0; i < rank; ++i) {
       if (i) tmpl += ", ";
       tmpl += "(uint32_t)$" + std::to_string(2 + i);
     }
     tmpl += "};\n";
-    tmpl += "  uint32_t _afir_ss[" + std::to_string(rank) + "] = {";
+    tmpl += "  uint32_t _ascend_ss[" + std::to_string(rank) + "] = {";
     for (uint32_t i = 0; i < rank; ++i) {
       if (i) tmpl += ", ";
       tmpl += "(uint32_t)$" + std::to_string(2 + rank + i);
@@ -3774,68 +3774,68 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       unsigned pipeOperand = 2 + (2 * rank);
       unsigned scratchId = broadcastScratchId++;
       std::string tbufName =
-          "_afir_bcast_src_tbuf_" + std::to_string(scratchId);
+          "_ascend_bcast_src_tbuf_" + std::to_string(scratchId);
       std::string tensorName =
-          "_afir_bcast_src_" + std::to_string(scratchId);
+          "_ascend_bcast_src_" + std::to_string(scratchId);
       tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> " + tbufName +
               ";\n";
-      tmpl += "  uint32_t _afir_src_count = _afir_ds[0];\n";
-      tmpl += "  uint32_t _afir_src_bytes = _afir_src_count * sizeof(" +
+      tmpl += "  uint32_t _ascend_src_count = _ascend_ds[0];\n";
+      tmpl += "  uint32_t _ascend_src_bytes = _ascend_src_count * sizeof(" +
               elemTypeStr + ");\n";
-      tmpl += "  uint32_t _afir_src_aligned_bytes = _afir_src_bytes == 0u ? "
-              "0u : ((_afir_src_bytes + 31u) / 32u) * 32u;\n";
-      tmpl += "  if (_afir_src_bytes != 0u && _afir_src_aligned_bytes < 32u)\n";
-      tmpl += "    _afir_src_aligned_bytes = 32u;\n";
+      tmpl += "  uint32_t _ascend_src_aligned_bytes = _ascend_src_bytes == 0u ? "
+              "0u : ((_ascend_src_bytes + 31u) / 32u) * 32u;\n";
+      tmpl += "  if (_ascend_src_bytes != 0u && _ascend_src_aligned_bytes < 32u)\n";
+      tmpl += "    _ascend_src_aligned_bytes = 32u;\n";
       tmpl += "  $" + std::to_string(pipeOperand) + ".InitBuffer(" + tbufName +
-              ", _afir_src_aligned_bytes);\n";
+              ", _ascend_src_aligned_bytes);\n";
       tmpl += "  AscendC::LocalTensor<" + elemTypeStr + "> " + tensorName +
               " = " + tbufName + ".Get<" + elemTypeStr + ">();\n";
       tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
-      tmpl += "  for (uint32_t _afir_i = 0; _afir_i < _afir_src_count; "
-              "++_afir_i)\n";
-      tmpl += "    " + tensorName + ".SetValue(_afir_i, static_cast<" +
-              elemTypeStr + ">($1.GetValue(_afir_i)));\n";
-      tmpl += "  " + tensorName + ".SetSize(_afir_src_count);\n";
+      tmpl += "  for (uint32_t _ascend_i = 0; _ascend_i < _ascend_src_count; "
+              "++_ascend_i)\n";
+      tmpl += "    " + tensorName + ".SetValue(_ascend_i, static_cast<" +
+              elemTypeStr + ">($1.GetValue(_ascend_i)));\n";
+      tmpl += "  " + tensorName + ".SetSize(_ascend_src_count);\n";
       tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
-      tmpl += "  if (_afir_ss[1] == 1u) {\n";
-      tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
-      tmpl += "      auto _afir_v = " + tensorName + ".GetValue(_afir_r);\n";
-      tmpl += "      uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
-      tmpl += "      if (((_afir_row_offset * sizeof(" + elemTypeStr +
-              ")) % 32u) == 0u && ((_afir_ds[1] * sizeof(" + elemTypeStr +
+      tmpl += "  if (_ascend_ss[1] == 1u) {\n";
+      tmpl += "    for (uint32_t _ascend_r = 0; _ascend_r < _ascend_ds[0]; ++_ascend_r) {\n";
+      tmpl += "      auto _ascend_v = " + tensorName + ".GetValue(_ascend_r);\n";
+      tmpl += "      uint32_t _ascend_row_offset = _ascend_r * _ascend_ds[1];\n";
+      tmpl += "      if (((_ascend_row_offset * sizeof(" + elemTypeStr +
+              ")) % 32u) == 0u && ((_ascend_ds[1] * sizeof(" + elemTypeStr +
               ")) % 32u) == 0u) {\n";
-      tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
-              "_afir_c += 1024u) {\n";
-      tmpl += "          uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < "
-              "1024u) ? (_afir_ds[1] - _afir_c) : 1024u;\n";
-      tmpl += "          AscendC::Duplicate($0[_afir_row_offset + _afir_c], "
-              "_afir_v, _afir_chunk);\n";
-      tmpl += "          uint32_t _afir_vec_elems = 32u / sizeof(" +
+      tmpl += "        for (uint32_t _ascend_c = 0; _ascend_c < _ascend_ds[1]; "
+              "_ascend_c += 1024u) {\n";
+      tmpl += "          uint32_t _ascend_chunk = ((_ascend_ds[1] - _ascend_c) < "
+              "1024u) ? (_ascend_ds[1] - _ascend_c) : 1024u;\n";
+      tmpl += "          AscendC::Duplicate($0[_ascend_row_offset + _ascend_c], "
+              "_ascend_v, _ascend_chunk);\n";
+      tmpl += "          uint32_t _ascend_vec_elems = 32u / sizeof(" +
               elemTypeStr + ");\n";
-      tmpl += "          uint32_t _afir_tail_base = (_afir_chunk / "
-              "_afir_vec_elems) * _afir_vec_elems;\n";
-      tmpl += "          for (uint32_t _afir_t = _afir_tail_base; "
-              "_afir_t < _afir_chunk; ++_afir_t)\n";
-      tmpl += "            $0.SetValue(_afir_row_offset + _afir_c + "
-              "_afir_t, _afir_v);\n";
+      tmpl += "          uint32_t _ascend_tail_base = (_ascend_chunk / "
+              "_ascend_vec_elems) * _ascend_vec_elems;\n";
+      tmpl += "          for (uint32_t _ascend_t = _ascend_tail_base; "
+              "_ascend_t < _ascend_chunk; ++_ascend_t)\n";
+      tmpl += "            $0.SetValue(_ascend_row_offset + _ascend_c + "
+              "_ascend_t, _ascend_v);\n";
       tmpl += "        }\n";
       tmpl += "      } else {\n";
-      tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
-              "++_afir_c)\n";
-      tmpl += "          $0.SetValue(_afir_row_offset + _afir_c, _afir_v);\n";
+      tmpl += "        for (uint32_t _ascend_c = 0; _ascend_c < _ascend_ds[1]; "
+              "++_ascend_c)\n";
+      tmpl += "          $0.SetValue(_ascend_row_offset + _ascend_c, _ascend_v);\n";
       tmpl += "      }\n";
       tmpl += "    }\n";
       tmpl += "  } else {\n";
       tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", " +
               std::to_string(rank) + ", " + std::to_string(axis) +
-              ">($0, $1, _afir_ds, _afir_ss);\n";
+              ">($0, $1, _ascend_ds, _ascend_ss);\n";
       tmpl += "  }\n";
       tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
       tmpl += "}";
     } else {
       tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " +
               std::to_string(rank) + ", " + std::to_string(axis) +
-              ">($0, $1, _afir_ds, _afir_ss);\n";
+              ">($0, $1, _ascend_ds, _ascend_ss);\n";
       tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
       tmpl += "}";
     }
@@ -3906,20 +3906,20 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
     rewriter.setInsertionPoint(op);
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_gather_count = static_cast<uint32_t>($4);\n";
-    tmpl += "  uint32_t _afir_gather_padded_count = _afir_gather_count == 0u ? 0u : "
-            "((_afir_gather_count + " +
+    tmpl += "  uint32_t _ascend_gather_count = static_cast<uint32_t>($4);\n";
+    tmpl += "  uint32_t _ascend_gather_padded_count = _ascend_gather_count == 0u ? 0u : "
+            "((_ascend_gather_count + " +
             std::to_string(maxGatherCount - 1) + "u) / " +
             std::to_string(maxGatherCount) + "u) * " +
             std::to_string(maxGatherCount) + "u;\n";
-    tmpl += "  $0.SetSize(_afir_gather_padded_count);\n";
+    tmpl += "  $0.SetSize(_ascend_gather_padded_count);\n";
     tmpl += "  $1.SetSize((uint32_t)" + sourceSetSizeExpr + ");\n";
-    tmpl += "  $2.SetSize(_afir_gather_count);\n";
-    tmpl += "  for (uint32_t _afir_i = 0; _afir_i < _afir_gather_count; ++_afir_i) {\n";
-    tmpl += "    uint32_t _afir_elem_offset = (static_cast<uint32_t>($3) / " +
+    tmpl += "  $2.SetSize(_ascend_gather_count);\n";
+    tmpl += "  for (uint32_t _ascend_i = 0; _ascend_i < _ascend_gather_count; ++_ascend_i) {\n";
+    tmpl += "    uint32_t _ascend_elem_offset = (static_cast<uint32_t>($3) / " +
             std::to_string(srcElemBytes) +
-            "u) + static_cast<uint32_t>($2.GetValue(_afir_i));\n";
-    tmpl += "    $0.SetValue(_afir_i, $1.GetValue(_afir_elem_offset));\n";
+            "u) + static_cast<uint32_t>($2.GetValue(_ascend_i));\n";
+    tmpl += "    $0.SetValue(_ascend_i, $1.GetValue(_ascend_elem_offset));\n";
     tmpl += "  }\n}";
     tmpl += "\nAscendC::PipeBarrier<PIPE_ALL>()";
 
@@ -3988,37 +3988,37 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       std::string pipeRef; // placeholder name for pipe arg
       if (dstQueueLenVal && srcTBufLenVal) {
         // $2 = dst_bytes, $3 = src_bytes, $4 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(half));\n";
-        tmpl += "  uint32_t _afir_cols = (uint32_t)($3 / $2);\n";
+        tmpl += "  uint32_t _ascend_rows = (uint32_t)($2 / sizeof(half));\n";
+        tmpl += "  uint32_t _ascend_cols = (uint32_t)($3 / $2);\n";
         pipeRef = "$4";
       } else if (dstQueueLenVal) {
         // $2 = dst_bytes, $3 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(half));\n";
-        tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $2);\n";
+        tmpl += "  uint32_t _ascend_rows = (uint32_t)($2 / sizeof(half));\n";
+        tmpl += "  uint32_t _ascend_cols = (uint32_t)($1.GetSize() / $2);\n";
         pipeRef = "$3";
       } else {
         // $2 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($0.GetSize() / sizeof(half));\n";
-        tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $0.GetSize());\n";
+        tmpl += "  uint32_t _ascend_rows = (uint32_t)($0.GetSize() / sizeof(half));\n";
+        tmpl += "  uint32_t _ascend_cols = (uint32_t)($1.GetSize() / $0.GetSize());\n";
         pipeRef = "$2";
       }
       auto srcElemType =
           cast<ascendc::LocalTensorType>(op.getSrc().getType()).getElementType();
       if (srcElemType.isF16()) {
         tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
-        tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_rows; ++_afir_r) {\n";
-        tmpl += "    float _afir_acc = 0.0f;\n";
-        tmpl += "    for (uint32_t _afir_c = 0; _afir_c < _afir_cols; ++_afir_c) {\n";
-        tmpl += "      uint32_t _afir_offset = _afir_r * _afir_cols + _afir_c;\n";
-        tmpl += "      _afir_acc += static_cast<float>($1.GetValue(_afir_offset));\n";
+        tmpl += "  for (uint32_t _ascend_r = 0; _ascend_r < _ascend_rows; ++_ascend_r) {\n";
+        tmpl += "    float _ascend_acc = 0.0f;\n";
+        tmpl += "    for (uint32_t _ascend_c = 0; _ascend_c < _ascend_cols; ++_ascend_c) {\n";
+        tmpl += "      uint32_t _ascend_offset = _ascend_r * _ascend_cols + _ascend_c;\n";
+        tmpl += "      _ascend_acc += static_cast<float>($1.GetValue(_ascend_offset));\n";
         tmpl += "    }\n";
-        tmpl += "    $0.SetValue(_afir_r, static_cast<half>(_afir_acc));\n";
+        tmpl += "    $0.SetValue(_ascend_r, static_cast<half>(_ascend_acc));\n";
         tmpl += "  }\n";
-        tmpl += "  $0.SetSize(_afir_rows);\n";
+        tmpl += "  $0.SetSize(_ascend_rows);\n";
       } else {
-        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
+        tmpl += "  uint32_t _ascend_shape[2] = {_ascend_rows, _ascend_cols};\n";
         tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
-        tmpl += "      $0, $1, _afir_shape, false);\n";
+        tmpl += "      $0, $1, _ascend_shape, false);\n";
       }
       tmpl += "}";
     } else {
@@ -4049,12 +4049,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
   auto alignedByteLengthBlock = [](unsigned lengthOperand) {
     std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_bytes = static_cast<uint32_t>($" +
+    tmpl += "  uint32_t _ascend_bytes = static_cast<uint32_t>($" +
             std::to_string(lengthOperand) + ");\n";
-    tmpl += "  uint32_t _afir_aligned_bytes = _afir_bytes == 0 ? 0 : "
-            "((_afir_bytes + 31u) / 32u) * 32u;\n";
-    tmpl += "  if (_afir_aligned_bytes < 32u)\n";
-    tmpl += "    _afir_aligned_bytes = 32u;\n";
+    tmpl += "  uint32_t _ascend_aligned_bytes = _ascend_bytes == 0 ? 0 : "
+            "((_ascend_bytes + 31u) / 32u) * 32u;\n";
+    tmpl += "  if (_ascend_aligned_bytes < 32u)\n";
+    tmpl += "    _ascend_aligned_bytes = 32u;\n";
     return tmpl;
   };
 
@@ -4065,7 +4065,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = alignedByteLengthBlock(/*lengthOperand=*/2);
-    tmpl += "  $0.InitBuffer($1, _afir_aligned_bytes);\n}";
+    tmpl += "  $0.InitBuffer($1, _ascend_aligned_bytes);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getPipe(), op.getBuffer(), op.getLength()}));
@@ -4076,7 +4076,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     std::string tmpl = alignedByteLengthBlock(/*lengthOperand=*/3);
-    tmpl += "  $0.InitBuffer($1, $2, _afir_aligned_bytes);\n}";
+    tmpl += "  $0.InitBuffer($1, $2, _ascend_aligned_bytes);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getPipe(), op.getQueue(), op.getNum(),
@@ -4090,20 +4090,20 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 static LogicalResult
 emitRequestedRuntimeArtifacts(ModuleOp moduleOp,
                               const CannTranslationOptions &options) {
-  afir::cann::CannRuntimeArtifactOptions artifactOptions;
+  ascend::cann::CannRuntimeArtifactOptions artifactOptions;
   artifactOptions.kernelFile = options.kernelFile;
   artifactOptions.soc = options.soc;
 
   if (!options.tilingSpaceOutPath.empty() &&
-      failed(afir::cann::emitTilingSpaceJson(
+      failed(ascend::cann::emitTilingSpaceJson(
           moduleOp, options.tilingSpaceOutPath, artifactOptions)))
     return failure();
   if (!options.artifactManifestOutPath.empty() &&
-      failed(afir::cann::emitArtifactManifestJson(
+      failed(ascend::cann::emitArtifactManifestJson(
           moduleOp, options.artifactManifestOutPath, artifactOptions)))
     return failure();
   if (!options.hostTilingOutPath.empty() &&
-      failed(afir::cann::emitHostTilingCpp(
+      failed(ascend::cann::emitHostTilingCpp(
           moduleOp, options.hostTilingOutPath, artifactOptions)))
     return failure();
 

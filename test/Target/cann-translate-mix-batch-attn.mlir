@@ -1,6 +1,6 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
-// CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
+// CHECK: #define __ASCEND_RUNTIME_MIX_KERNEL_FUN_H__
 // CHECK: #define ASCENDC_CUBE_ONLY
 // CHECK-LABEL: extern "C" __global__ __aicore__ void attn_score(
 // CHECK: GM_ADDR q, GM_ADDR key, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,

@@ -26,7 +26,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::cann {
+namespace mlir::ascend::cann {
 namespace {
 
 struct TilingFieldInfo {
@@ -427,7 +427,7 @@ static llvm::json::Array buildWritesToInputArgs(func::FuncOp funcOp,
     recordWriteTo(storeOp.getMemref());
   });
   funcOp.walk([&](emitasc::CallOpaqueOp callOp) {
-    if (!callOp.getCallee().starts_with("afir_gm_store<"))
+    if (!callOp.getCallee().starts_with("ascend_gm_store<"))
       return;
     ValueRange operands = callOp.getCalleeOperands();
     if (operands.empty())
@@ -2244,4 +2244,4 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
   });
 }
 
-} // namespace mlir::afir::cann
+} // namespace mlir::ascend::cann
