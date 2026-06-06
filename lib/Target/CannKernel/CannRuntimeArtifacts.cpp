@@ -110,6 +110,59 @@ static std::string makeShapeKey(StringRef name) {
   return rest.substr(0, pos).str() + "_dim" + rest.substr(pos + 1).str();
 }
 
+static FailureOr<llvm::json::Array>
+buildStringArrayJson(func::FuncOp funcOp, ArrayAttr arrayAttr,
+                     StringRef fieldName) {
+  llvm::json::Array values;
+  for (auto [index, rawValue] : llvm::enumerate(arrayAttr)) {
+    auto value = dyn_cast<StringAttr>(rawValue);
+    if (!value)
+      return funcOp.emitError()
+             << "structured_lowering field '" << fieldName << "' element "
+             << index << " must be a string attribute";
+    values.push_back(value.getValue().str());
+  }
+  return values;
+}
+
+static FailureOr<llvm::json::Value>
+buildStructuredLoweringLoopAxisJson(func::FuncOp funcOp, Attribute axisAttr,
+                                    size_t index) {
+  if (auto axis = dyn_cast<StringAttr>(axisAttr))
+    return llvm::json::Value(axis.getValue().str());
+
+  auto axisDict = dyn_cast<DictionaryAttr>(axisAttr);
+  if (!axisDict)
+    return funcOp.emitError()
+           << ::mlir::ascend::kScheduleStructuredLoweringAttr
+           << " field 'loop_axes' element " << index
+           << " must be a string or dictionary attribute";
+
+  llvm::json::Object axisJson;
+  if (auto axis = dyn_cast_or_null<IntegerAttr>(axisDict.get("axis"))) {
+    if (!axis.getType().isInteger(64))
+      return funcOp.emitError()
+             << ::mlir::ascend::kScheduleStructuredLoweringAttr
+             << " field 'loop_axes' element " << index
+             << " field 'axis' must be an i64 integer attribute";
+    axisJson["axis"] = axis.getInt();
+  }
+  for (StringRef key : {"axis_kind", "tile_param", "binding"}) {
+    if (auto value = dyn_cast_or_null<StringAttr>(axisDict.get(key)))
+      axisJson[key] = value.getValue().str();
+  }
+  for (StringRef key : {"roles", "primitive_uses"}) {
+    if (auto values = dyn_cast_or_null<ArrayAttr>(axisDict.get(key))) {
+      FailureOr<llvm::json::Array> jsonValues =
+          buildStringArrayJson(funcOp, values, key);
+      if (failed(jsonValues))
+        return failure();
+      axisJson[key] = std::move(*jsonValues);
+    }
+  }
+  return llvm::json::Value(std::move(axisJson));
+}
+
 static std::string getHostCppType(Type type) {
   if (type.isInteger(64))
     return "int64_t";
@@ -1191,13 +1244,11 @@ buildScheduleTilingParams(func::FuncOp funcOp,
             dyn_cast_or_null<ArrayAttr>(structuredLowering.get("loop_axes"))) {
       llvm::json::Array loopAxesJson;
       for (auto [index, axisAttr] : llvm::enumerate(loopAxes)) {
-        auto axis = dyn_cast<StringAttr>(axisAttr);
-        if (!axis)
-          return funcOp.emitError()
-                 << ::mlir::ascend::kScheduleStructuredLoweringAttr
-                 << " field 'loop_axes' element " << index
-                 << " must be a string attribute";
-        loopAxesJson.push_back(axis.getValue().str());
+        FailureOr<llvm::json::Value> axisJson =
+            buildStructuredLoweringLoopAxisJson(funcOp, axisAttr, index);
+        if (failed(axisJson))
+          return failure();
+        loopAxesJson.push_back(std::move(*axisJson));
       }
       structuredLoweringJson["loop_axes"] = std::move(loopAxesJson);
     }

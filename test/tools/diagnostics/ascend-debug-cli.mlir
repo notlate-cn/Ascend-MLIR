@@ -23,6 +23,9 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 // CHECK: ascend_debug.collect=ok
 // CHECK: ascend_debug.collect_memory_detail_negative=ok
 // CHECK: ascend_debug.collect_deep=ok
+// CHECK: ascend_debug.collect_failure_workspace=ok
+// CHECK: ascend_debug.collect_full_codegen=ok
+// CHECK: ascend_debug.collect_full_codegen_artifact_fallback=ok
 // CHECK: ascend_debug.collect_memory_detail=ok
 // CHECK: ascend_debug.legacy_manifest_alias=rejected
 // CHECK: ascend_debug.collect_graph=ok

@@ -982,6 +982,117 @@ fi
 cat "$1"
 SH
 chmod +x "${TMP_DIR}/fake-full-codegen-tools/ascend-mlir-opt"
+cat >"${TMP_DIR}/fake-full-codegen-tools/ascend-mlir-translate" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ascend-mlir-translate %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_FULL_CODEGEN_LOG}"
+tiling=""
+manifest=""
+host_tiling=""
+kernel=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tiling-space-out=*) tiling="${1#--tiling-space-out=}" ;;
+    --artifact-manifest-out=*) manifest="${1#--artifact-manifest-out=}" ;;
+    --host-tiling-out=*) host_tiling="${1#--host-tiling-out=}" ;;
+    -o)
+      kernel="$2"
+      shift
+      ;;
+  esac
+  shift
+done
+if [[ -n "${tiling}" ]]; then
+  printf '{"schema":"ascend.cann.tiling_space","kernels":[]}\n' >"${tiling}"
+fi
+if [[ -n "${manifest}" ]]; then
+  cat >"${manifest}" <<'JSON'
+{
+  "schema": "ascend.cann.artifact_manifest",
+  "kernelName": "kernel_0",
+  "kernelKind": "vec",
+  "hostTilingBindings": [
+    {
+      "id": "kernel_0.host_tiling",
+      "library": "host_tiling.so",
+      "symbols": {
+        "getTiling": "kernel_0_GetTiling",
+        "getBlockDim": "kernel_0_GetBlockDim",
+        "getWorkspaceSize": "kernel_0_GetWorkspaceSize"
+      }
+    }
+  ],
+  "kernel_entries": [
+    {
+      "kernel_id": "kernel_0",
+      "kernelKind": "vec",
+      "workspaceSizeBytes": 256,
+      "abi": {
+        "numInputs": 2,
+        "numOutputs": 1,
+        "inputs": [
+          {"name": "arg0", "dtype": "f16", "shape": [4, 8]},
+          {"name": "arg1", "dtype": "f16", "shape": [4, 8]}
+        ],
+        "outputs": [
+          {"name": "out0", "dtype": "f16", "shape": [4, 8]}
+        ],
+        "workspaceArgIndex": 3
+      },
+      "resources": {
+        "executionUnit": "aicore",
+        "kernelKind": "vec",
+        "memorySpaces": [
+          {"argIndex": 0, "memorySpace": 0},
+          {"argIndex": 1, "memorySpace": 0}
+        ]
+      },
+      "scheduleEntries": [
+        {
+          "decisionId": "kernel_0.decision.0",
+          "guard": "true",
+          "fallback": false,
+          "priority": 0,
+          "shapeBucketKey": "static",
+          "hostTilingId": "kernel_0.host_tiling",
+          "blockDim": 4,
+          "workspaceSizeBytes": 256,
+          "tilingParams": {
+            "tile_binding": "symbolic",
+            "tile_params": [
+              {"name": "TB_M", "axis": 0, "axis_kind": "parallel", "binding": "runtime", "default": 4, "upper_bound": 4, "extent": 4}
+            ],
+            "tail_policies": ["masked_tail"],
+            "structured_lowering": {
+              "contract": "generic_tiled_loop",
+              "representation": "symbolic_marker_contract",
+              "loop_axes": [{"axis": 0, "axis_kind": "parallel", "tile_param": "TB_M"}],
+              "guard_marker_count": 0,
+              "tail_marker_count": 1
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kernelGraph": {
+    "nodes": [{"name": "kernel_0", "entry_index": 0}],
+    "edges": []
+  },
+  "tilingSchema": [
+    {"name": "TB_M", "type": "int64", "values": [1, 2, 4]}
+  ]
+}
+JSON
+fi
+if [[ -n "${host_tiling}" ]]; then
+  printf 'extern "C" int full_codegen_host_tiling() { return 0; }\n' >"${host_tiling}"
+fi
+if [[ -n "${kernel}" ]]; then
+  printf 'extern "C" __global__ __aicore__ void full_codegen_kernel() {}\n' >"${kernel}"
+fi
+SH
+chmod +x "${TMP_DIR}/fake-full-codegen-tools/ascend-mlir-translate"
 ASCEND_DEBUG_FAKE_FULL_CODEGEN_LOG="${TMP_DIR}/fake-full-codegen-tools.log" \
   CANN_ROOT="${TMP_DIR}/fake-full-codegen-cann" \
   ASCEND_SOC_VERSION="SyntheticSoC" \
@@ -1008,9 +1119,15 @@ test -f "${TMP_DIR}/debug-run-full-codegen/stages/060-compute-lower-out.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/070-parallelize-out.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/080-prepare-for-emit-out.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/090-cann-signature-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/kernel.cpp"
+test -f "${TMP_DIR}/debug-run-full-codegen/host_tiling.cpp"
+test -f "${TMP_DIR}/debug-run-full-codegen/tiling_space.json"
+test -f "${TMP_DIR}/debug-run-full-codegen/artifact_manifest.json"
 grep -Fq -- 'debug-dump-dir=' "${TMP_DIR}/fake-full-codegen-tools.log"
 grep -Fq -- '--ascend-schedule=target-tile-policy=target-aware' "${TMP_DIR}/fake-full-codegen-tools.log"
 grep -Fq -- '--ascend-realize=materialization-mode=memory-space-annotate' "${TMP_DIR}/fake-full-codegen-tools.log"
+grep -Fq -- 'ascend-mlir-translate' "${TMP_DIR}/fake-full-codegen-tools.log"
+grep -Fq -- '--artifact-manifest-out=artifact_manifest.json' "${TMP_DIR}/fake-full-codegen-tools.log"
 python3 - "${TMP_DIR}/debug-run-full-codegen/manifest.json" <<'PY'
 import json
 import pathlib
@@ -1063,6 +1180,24 @@ assert by_phase["Translate"] == [
     "080-prepare-for-emit-out",
     "090-cann-signature-out",
 ]
+artifacts = {item["kind"]: item for item in manifest["artifacts"]}
+assert artifacts["kernel-cpp"]["path"] == "kernel.cpp", artifacts
+assert artifacts["kernel-cpp"]["status"] == "available", artifacts
+assert artifacts["host-tiling-cpp"]["path"] == "host_tiling.cpp", artifacts
+assert artifacts["host-tiling-cpp"]["status"] == "available", artifacts
+assert artifacts["tiling-space"]["path"] == "tiling_space.json", artifacts
+assert artifacts["tiling-space"]["status"] == "available", artifacts
+assert artifacts["artifact-manifest"]["path"] == "artifact_manifest.json", artifacts
+assert artifacts["artifact-manifest"]["status"] == "available", artifacts
+assert any(command["stage"] == "translate-artifacts" for command in manifest["commands"]), manifest["commands"]
+assert any(report["stage"] == "translate-artifacts" for report in manifest["reports"]), manifest["reports"]
+graphs = {item["kind"]: item for item in manifest["graphs"]}
+assert graphs["artifact-manifest"]["path"] == "artifact_manifest.json", graphs
+assert graphs["kernelized-ir"]["path"] == "graphs/kernelized.mlir", graphs
+assert graphs["kernel-dag-svg"]["path"] == "graphs/kernel_dag.svg", graphs
+assert graphs["kernel-dag-summary"]["path"] == "graphs/kernel_dag.summary.json", graphs
+assert any(command["stage"] == "kernel-dag" for command in manifest["commands"]), manifest["commands"]
+assert any(report["stage"] == "kernel-dag" and report["path"] == "reports/110-kernel-dag.report.txt" for report in manifest["reports"]), manifest["reports"]
 PY
 ascend-debug open "${TMP_DIR}/debug-run-full-codegen" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen.txt"
 grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Command</th><th>Report</th></tr></thead>' \
@@ -1117,6 +1252,18 @@ grep -Fq ':root { color-scheme: light; }' "${TMP_DIR}/debug-run-full-codegen/vie
 grep -Fq '<pre>command:' "${TMP_DIR}/debug-run-full-codegen/views/reports/030-kernelize.report.txt.html"
 grep -Fq '<td class="stage-group-cell" rowspan="4">Translate</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<h2>Kernel / Runtime Artifacts</h2>' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<a href="views/artifacts/kernel.cpp.html">kernel.cpp</a>' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<a href="views/artifacts/artifact_manifest.json.html">artifact_manifest.json</a>' "${TMP_DIR}/debug-run-full-codegen/index.html"
+test -f "${TMP_DIR}/debug-run-full-codegen/views/artifacts/kernel.cpp.html"
+grep -Fq 'full_codegen_kernel' "${TMP_DIR}/debug-run-full-codegen/views/artifacts/kernel.cpp.html"
+test -f "${TMP_DIR}/debug-run-full-codegen/graphs/kernel_dag.svg"
+test -f "${TMP_DIR}/debug-run-full-codegen/graphs/kernel_dag.summary.json"
+test -f "${TMP_DIR}/debug-run-full-codegen/reports/110-kernel-dag.report.txt"
+grep -Fq 'Artifact Manifest Dashboard' "${TMP_DIR}/debug-run-full-codegen/views/artifacts/artifact_manifest.json.html"
+grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-full-codegen/views/artifacts/artifact_manifest.json.html"
+grep -Fq 'kernel_0.decision.0' "${TMP_DIR}/debug-run-full-codegen/views/artifacts/artifact_manifest.json.html"
+grep -Fq 'TB_M' "${TMP_DIR}/debug-run-full-codegen/views/artifacts/artifact_manifest.json.html"
 if grep -Fq '<th>状态</th>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
   echo "Stage Timeline should not expose status column" >&2
   exit 1
@@ -1189,8 +1336,78 @@ assert [step["name"] for step in translate["steps"]] == [
     "090-cann-signature-out",
 ]
 assert "compute-lower" not in [group["name"] for group in phase_groups]
+artifacts = graph["artifacts"]["runtime"]
+assert [item["kind"] for item in artifacts] == [
+    "kernel-cpp",
+    "host-tiling-cpp",
+    "tiling-space",
+    "artifact-manifest",
+], artifacts
+assert graph["kernel_dag"]["kernel_count"] == 1, graph["kernel_dag"]
+assert graph["kernel_dag"]["schedule_entry_count"] == 1, graph["kernel_dag"]
+assert graph["kernel_dag"]["nodes"]["kernel_0"]["schedule_entry_count"] == 1, graph["kernel_dag"]
 PY
 echo "ascend_debug.collect_full_codegen=ok"
+
+mkdir -p "${TMP_DIR}/fake-full-codegen-fallback-tools" "${TMP_DIR}/fake-full-codegen-fallback-cann"
+cp "${TMP_DIR}/fake-full-codegen-tools/ascend-mlir-opt" \
+  "${TMP_DIR}/fake-full-codegen-fallback-tools/ascend-mlir-opt"
+cat >"${TMP_DIR}/fake-full-codegen-fallback-tools/ascend-mlir-translate" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ascend-mlir-translate %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_FULL_CODEGEN_LOG}"
+kernel=""
+has_manifest=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --artifact-manifest-out=*) has_manifest=true ;;
+    -o)
+      kernel="$2"
+      shift
+      ;;
+  esac
+  shift
+done
+if [[ "${has_manifest}" == "true" ]]; then
+  echo "simulated artifact manifest schema failure" >&2
+  exit 9
+fi
+printf 'extern "C" __global__ __aicore__ void fallback_kernel() {}\n' >"${kernel}"
+SH
+chmod +x "${TMP_DIR}/fake-full-codegen-fallback-tools/ascend-mlir-translate"
+ASCEND_DEBUG_FAKE_FULL_CODEGEN_LOG="${TMP_DIR}/fake-full-codegen-fallback-tools.log" \
+  CANN_ROOT="${TMP_DIR}/fake-full-codegen-fallback-cann" \
+  ASCEND_SOC_VERSION="SyntheticSoC" \
+  PATH="${TMP_DIR}/fake-full-codegen-fallback-tools:${PATH}" \
+  ascend-debug collect "${INPUT_MLIR}" \
+    --out "${TMP_DIR}/debug-run-full-codegen-fallback" \
+    --mode deep
+test -f "${TMP_DIR}/debug-run-full-codegen-fallback/kernel.cpp"
+test -f "${TMP_DIR}/debug-run-full-codegen-fallback/reports/100-translate-artifacts.report.txt"
+test -f "${TMP_DIR}/debug-run-full-codegen-fallback/reports/101-translate-kernel-fallback.report.txt"
+test ! -e "${TMP_DIR}/debug-run-full-codegen-fallback/artifact_manifest.json"
+python3 - "${TMP_DIR}/debug-run-full-codegen-fallback/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert manifest["status"] == "success", manifest
+artifacts = {item["kind"]: item for item in manifest["artifacts"]}
+assert artifacts["kernel-cpp"]["status"] == "available", artifacts
+assert artifacts["artifact-manifest"]["status"] == "failed", artifacts
+assert artifacts["artifact-manifest"]["diagnostic"] == "reports/100-translate-artifacts.report.txt", artifacts
+assert artifacts["tiling-space"]["status"] == "failed", artifacts
+assert artifacts["host-tiling-cpp"]["status"] == "failed", artifacts
+commands = {command["stage"]: command for command in manifest["commands"]}
+assert commands["translate-artifacts"]["status"] == "failed", commands
+assert commands["translate-kernel-fallback"]["status"] == "success", commands
+PY
+ascend-debug open "${TMP_DIR}/debug-run-full-codegen-fallback" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen-fallback.txt"
+grep -Fq '<a href="views/artifacts/kernel.cpp.html">kernel.cpp</a>' "${TMP_DIR}/debug-run-full-codegen-fallback/index.html"
+grep -Fq 'artifact_manifest.json' "${TMP_DIR}/debug-run-full-codegen-fallback/index.html"
+grep -Fq 'reports/100-translate-artifacts.report.txt' "${TMP_DIR}/debug-run-full-codegen-fallback/index.html"
+echo "ascend_debug.collect_full_codegen_artifact_fallback=ok"
 
 mkdir -p "${TMP_DIR}/fake-memory-detail-opt" "${TMP_DIR}/fake-cann-root"
 FAKE_CANN_ROOT="$(cd "${TMP_DIR}/fake-cann-root" && pwd -P)"
@@ -1829,7 +2046,7 @@ grep -Fq 'document.getElementById("graph-title").textContent = stageGraphHeaderT
 grep -Fq 'document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["Stage", stageStageTitle(stage)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["Artifact", stage.path]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'return info.title || (stage && stage.step) || "未命名 Step";' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'return (stage && stage.step_label) || info.title || (stage && stage.step) || (stage && stage.name) || "stage";' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function stageStepId(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function stageGraphHeaderTitle(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'return `${stageStageTitle(stage)} / ${stageStepId(stage)}`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -2521,7 +2738,14 @@ cat >"${TMP_DIR}/debug-run-stage-graph/manifest.json" <<'JSON'
   "pipeline": "normalize-kernelize",
   "stages": [
     {"order": 0, "name": "source", "path": "stages/000-source.mlir"},
-    {"order": 29, "name": "kernelize-out", "path": "stages/029-kernelize-out.mlir"}
+    {"order": 10, "name": "normalize-in", "path": "stages/010-normalize-in.mlir"},
+    {"order": 19, "name": "normalize-out", "path": "stages/019-normalize-out.mlir"},
+    {"order": 20, "name": "kernelize-in", "path": "stages/020-kernelize-in.mlir"},
+    {"order": 29, "name": "kernelize-out", "path": "stages/029-kernelize-out.mlir"},
+    {"order": 30, "name": "schedule-in", "path": "stages/030-schedule-in.mlir"},
+    {"order": 39, "name": "schedule-out", "path": "stages/039-schedule-out.mlir"},
+    {"order": 40, "name": "realize-in", "path": "stages/040-realize-in.mlir"},
+    {"order": 49, "name": "realize-out", "path": "stages/049-realize-out.mlir"}
   ]
 }
 JSON
@@ -2538,6 +2762,12 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
   return %out : tensor<4x8xf16>
 }
 MLIR
+cp "${TMP_DIR}/debug-run-stage-graph/stages/000-source.mlir" \
+  "${TMP_DIR}/debug-run-stage-graph/stages/010-normalize-in.mlir"
+cp "${TMP_DIR}/debug-run-stage-graph/stages/000-source.mlir" \
+  "${TMP_DIR}/debug-run-stage-graph/stages/019-normalize-out.mlir"
+cp "${TMP_DIR}/debug-run-stage-graph/stages/000-source.mlir" \
+  "${TMP_DIR}/debug-run-stage-graph/stages/020-kernelize-in.mlir"
 cat >"${TMP_DIR}/debug-run-stage-graph/stages/029-kernelize-out.mlir" <<'MLIR'
 func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
   %empty = tensor.empty() : tensor<4x8xf16>
@@ -2551,12 +2781,43 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
   return %out : tensor<4x8xf16>
 }
 MLIR
+cp "${TMP_DIR}/debug-run-stage-graph/stages/029-kernelize-out.mlir" \
+  "${TMP_DIR}/debug-run-stage-graph/stages/030-schedule-in.mlir"
+cp "${TMP_DIR}/debug-run-stage-graph/stages/029-kernelize-out.mlir" \
+  "${TMP_DIR}/debug-run-stage-graph/stages/039-schedule-out.mlir"
+cp "${TMP_DIR}/debug-run-stage-graph/stages/029-kernelize-out.mlir" \
+  "${TMP_DIR}/debug-run-stage-graph/stages/040-realize-in.mlir"
+cp "${TMP_DIR}/debug-run-stage-graph/stages/029-kernelize-out.mlir" \
+  "${TMP_DIR}/debug-run-stage-graph/stages/049-realize-out.mlir"
 ascend-debug open "${TMP_DIR}/debug-run-stage-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-stage-graph.txt"
 grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run-stage-graph/index.html"
 grep -Fq '<a href="views/debug_graph.html?stage=0">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=10">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
 grep -Fq '<a href="views/debug_graph.html?stage=29">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=49">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+if grep -Fq '未命名 Step' "${TMP_DIR}/debug-run-stage-graph/index.html"; then
+  echo "debug index should derive a fallback Step title from stage name" >&2
+  exit 1
+fi
+grep -Fq '<div class="step-title">normalize-in</div>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<div class="step-title">schedule-out</div>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<div class="step-title">realize-out</div>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<span class="stage-child-title">normalize-in</span>' "${TMP_DIR}/debug-run-stage-graph/views/debug_graph.html"
+grep -Fq '<span class="stage-child-title">kernelize-out</span>' "${TMP_DIR}/debug-run-stage-graph/views/debug_graph.html"
+grep -Fq '<span class="stage-child-title">schedule-out</span>' "${TMP_DIR}/debug-run-stage-graph/views/debug_graph.html"
+grep -Fq '<span class="stage-child-title">realize-out</span>' "${TMP_DIR}/debug-run-stage-graph/views/debug_graph.html"
+if grep -Fq '无 Step ID' "${TMP_DIR}/debug-run-stage-graph/views/debug_graph.html"; then
+  echo "debug graph workbench should derive a fallback Step ID from stage name" >&2
+  exit 1
+fi
+if grep -Fq '未命名 Step' "${TMP_DIR}/debug-run-stage-graph/views/debug_graph.html"; then
+  echo "debug graph workbench should not show unnamed Step for named stages" >&2
+  exit 1
+fi
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/000-source.graph.json"
+test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/010-normalize-in.graph.json"
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json"
+test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/049-realize-out.graph.json"
 test ! -e "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
 test ! -e "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
 python3 - "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json" <<'PY'
@@ -2590,6 +2851,72 @@ assert "arith.addf" in linalg_nodes[0]["region_body"]
 assert "linalg.yield" in linalg_nodes[0]["region_body"]
 assert "%arg0" in linalg_nodes[0]["input_values"]
 assert "%out" in linalg_nodes[0]["result_values"]
+PY
+python3 - "${TMP_DIR}/debug-run-stage-graph/summaries/debug_graph.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+expected_names = [
+    "source",
+    "normalize-in",
+    "normalize-out",
+    "kernelize-in",
+    "kernelize-out",
+    "schedule-in",
+    "schedule-out",
+    "realize-in",
+    "realize-out",
+]
+assert [stage["name"] for stage in summary["stages"]] == expected_names, summary["stages"]
+expected_labels = {
+    "source": "Source",
+    "normalize-in": "Normalize",
+    "normalize-out": "Normalize",
+    "kernelize-in": "Kernelize",
+    "kernelize-out": "Kernelize",
+    "schedule-in": "Schedule",
+    "schedule-out": "Schedule",
+    "realize-in": "Realize",
+    "realize-out": "Realize",
+}
+assert {
+    stage["name"]: stage["stage_label"]
+    for stage in summary["stages"]
+} == expected_labels, summary["stages"]
+assert {
+    stage["name"]: stage["step_id"]
+    for stage in summary["stages"]
+} == {name: name for name in expected_names}, summary["stages"]
+stage = next(item for item in summary["stages"] if item["name"] == "kernelize-out")
+assert stage["stage_label"] == "Kernelize", stage
+assert stage["step_id"] == "kernelize-out", stage
+assert stage["step_label"] == "kernelize-out", stage
+groups = {item["name"]: item for item in summary["stage_groups"]}
+assert [item["name"] for item in summary["stage_groups"]] == [
+    "source",
+    "normalize",
+    "kernelize",
+    "schedule",
+    "realize",
+], summary["stage_groups"]
+assert [step["step_id"] for step in groups["normalize"]["steps"]] == [
+    "normalize-in",
+    "normalize-out",
+], groups["normalize"]
+assert [step["step_id"] for step in groups["kernelize"]["steps"]] == [
+    "kernelize-in",
+    "kernelize-out",
+], groups["kernelize"]
+assert [step["step_id"] for step in groups["schedule"]["steps"]] == [
+    "schedule-in",
+    "schedule-out",
+], groups["schedule"]
+assert [step["step_id"] for step in groups["realize"]["steps"]] == [
+    "realize-in",
+    "realize-out",
+], groups["realize"]
 PY
 echo "ascend_debug.stage_graph=ok"
 
@@ -2698,6 +3025,21 @@ if [[ -z "${SERVE_URL}" ]]; then
   cat "${TMP_DIR}/ascend-debug-serve.err" >&2 || true
   exit 1
 fi
+python3 - "${SERVE_URL}/index.html" "${SERVE_URL}/views/debug_graph.html" <<'PY'
+import sys
+import urllib.request
+
+index_page = urllib.request.urlopen(sys.argv[1], timeout=5).read().decode("utf-8")
+debug_page = urllib.request.urlopen(sys.argv[2], timeout=5).read().decode("utf-8")
+if '<a class="primary-debug-link" href="views/debug_graph.html">打开调试工作台</a>' not in index_page:
+    raise SystemExit("served index page is missing workbench link")
+if '<h1>Ascend Debug 调试工作台</h1>' not in debug_page:
+    raise SystemExit("served workbench page did not open")
+if "未命名 Step" in index_page:
+    raise SystemExit("served index shows unnamed stages")
+if "无 Step ID" in debug_page or "未命名 Step" in debug_page:
+    raise SystemExit("served workbench shows unnamed stages")
+PY
 python3 - "${SERVE_URL}/views/debug_graph.html" <<'PY'
 import html
 import json

@@ -124,6 +124,29 @@ def load_manifest(run_dir: pathlib.Path) -> dict[str, Any]:
             manifest_path=manifest_path,
             label=f"graph {index}",
         )
+
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        raise CommandError(f"manifest artifacts must be a list: {manifest_path}")
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            raise CommandError(f"manifest artifact {index} must be an object: {manifest_path}")
+        for field in ("kind", "label", "status"):
+            if field in artifact and not isinstance(artifact[field], str):
+                raise CommandError(f"manifest artifact {index} {field} must be a string: {manifest_path}")
+        if "path" not in artifact:
+            raise CommandError(f"manifest artifact {index} missing path: {manifest_path}")
+        _validate_run_relative_path(
+            artifact["path"],
+            manifest_path=manifest_path,
+            label=f"artifact {index}",
+        )
+        if "diagnostic" in artifact:
+            _validate_run_relative_path(
+                artifact["diagnostic"],
+                manifest_path=manifest_path,
+                label=f"artifact {index} diagnostic",
+            )
     return manifest
 
 
@@ -170,6 +193,15 @@ def _stage_group_label(stage: dict[str, Any]) -> str:
     if isinstance(phase, str) and phase:
         return phase
     return _infer_stage_group_label(stage.get("name"))
+
+
+def _stage_step_title(stage: dict[str, Any]) -> str:
+    step_info = stage.get("step_info") if isinstance(stage.get("step_info"), dict) else {}
+    step = stage.get("step")
+    if isinstance(step, str) and step:
+        return str(step_info.get("title") or step)
+    name = stage.get("name")
+    return str(step_info.get("title") or name or "stage")
 
 
 def _row_group_spans(items: list[Any], label_fn) -> list[int]:
@@ -259,6 +291,10 @@ def _stage_command_spans(
 
 def _stage_view_rel_path(stage_rel_path: str) -> str:
     return f"views/{stage_rel_path}.html"
+
+
+def _artifact_view_rel_path(artifact_rel_path: str) -> str:
+    return f"views/artifacts/{artifact_rel_path}.html"
 
 
 def _report_view_rel_path(report_rel_path: str) -> str:
@@ -392,7 +428,7 @@ def _stage_rows(
     command_spans, commands_by_row = _stage_command_spans(stages, commands_by_output)
     for index, stage in enumerate(stages):
         step_info = stage.get("step_info") if isinstance(stage.get("step_info"), dict) else {}
-        step_title = step_info.get("title") or stage.get("step") or "未命名 Step"
+        step_title = _stage_step_title(stage)
         step_id = stage.get("step")
         step_purpose = step_info.get("purpose")
         step_outputs = step_info.get("outputs")
@@ -520,6 +556,63 @@ def _graph_rows(
             "</tr>"
         )
     return "\n".join(rows)
+
+
+def _artifact_rows(
+    run_dir: pathlib.Path,
+    manifest: dict[str, Any],
+    artifact_views: dict[str, str],
+    report_views: dict[str, str],
+) -> str:
+    rows = []
+    for artifact in manifest.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        rel_path = str(artifact.get("path") or "")
+        exists = bool(rel_path) and (run_dir / rel_path).exists()
+        view_rel_path = artifact_views.get(rel_path)
+        diagnostic = artifact.get("diagnostic")
+        diagnostic_cell = ""
+        if isinstance(diagnostic, str) and diagnostic:
+            diagnostic_view = report_views.get(diagnostic)
+            diagnostic_cell = (
+                _link(diagnostic_view, diagnostic)
+                if diagnostic_view
+                else _path_link(diagnostic, exists=(run_dir / diagnostic).exists())
+            )
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(artifact.get('label') or artifact.get('kind'))}</td>"
+            f"<td>{_path_link(rel_path, exists=exists)}</td>"
+            f"<td>{_link(view_rel_path, rel_path) if view_rel_path else ''}</td>"
+            f"<td>{_cell(artifact.get('status'))}</td>"
+            f"<td>{diagnostic_cell}</td>"
+            "</tr>"
+        )
+    if not rows:
+        rows.append('<tr><td colspan="5">没有 runtime artifact 记录。</td></tr>')
+    return "\n".join(rows)
+
+
+def _artifact_section(
+    run_dir: pathlib.Path,
+    manifest: dict[str, Any],
+    artifact_views: dict[str, str],
+    report_views: dict[str, str],
+) -> str:
+    if not manifest.get("artifacts"):
+        return ""
+    return f"""
+<section>
+<h2>Kernel / Runtime Artifacts</h2>
+<table>
+<thead><tr><th>Artifact</th><th>Raw</th><th>View</th><th>Status</th><th>Diagnostic</th></tr></thead>
+<tbody>
+{_artifact_rows(run_dir, manifest, artifact_views, report_views)}
+</tbody>
+</table>
+</section>
+"""
 
 
 def _summary_rows(run_dir: pathlib.Path, json_views: dict[str, str]) -> str:
@@ -860,6 +953,7 @@ main {{ padding: 1rem; }}
 .panel {{ border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; padding: 0.85rem; margin: 0 0 0.85rem; }}
 .note {{ color: #475569; margin: 0 0 0.75rem; }}
 .empty-state {{ border: 1px dashed #94a3b8; border-radius: 8px; padding: 0.75rem; background: #f8fafc; color: #475569; }}
+.dag-frame {{ width: 100%; height: 30rem; border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; }}
 table {{ width: 100%; border-collapse: collapse; background: #ffffff; margin: 0 0 0.85rem; font-size: 0.84rem; }}
 th, td {{ border: 1px solid #cbd5e1; padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }}
 th {{ background: #f1f5f9; color: #334155; }}
@@ -1260,6 +1354,223 @@ def _render_debug_graph_summary_view(view_rel_path: str, rel_path: str, summary:
     )
 
 
+def _shape_summary(value: Any) -> str:
+    if isinstance(value, list):
+        return "x".join(str(item) for item in value)
+    return str(value or "")
+
+
+def _manifest_kernel_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = manifest.get("kernel_entries")
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _manifest_schedule_entries(kernel_entry: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = kernel_entry.get("scheduleEntries")
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _manifest_tile_param_names(schedule_entry: dict[str, Any]) -> str:
+    tiling = schedule_entry.get("tilingParams")
+    if not isinstance(tiling, dict):
+        return ""
+    params = tiling.get("tile_params")
+    if not isinstance(params, list):
+        return ""
+    names = [
+        str(param.get("name"))
+        for param in params
+        if isinstance(param, dict) and param.get("name")
+    ]
+    return ", ".join(names)
+
+
+def _manifest_kernel_rows(entries: list[dict[str, Any]]) -> str:
+    rows = []
+    for entry in entries:
+        abi = entry.get("abi") if isinstance(entry.get("abi"), dict) else {}
+        schedules = _manifest_schedule_entries(entry)
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(entry.get('kernel_id') or entry.get('kernelName'))}</td>"
+            f"<td>{_cell(entry.get('kernelKind') or (entry.get('resources') or {}).get('kernelKind') if isinstance(entry.get('resources'), dict) else entry.get('kernelKind'))}</td>"
+            f"<td>{_cell(abi.get('numInputs'))}</td>"
+            f"<td>{_cell(abi.get('numOutputs'))}</td>"
+            f"<td>{_cell(len(schedules))}</td>"
+            f"<td>{_cell(entry.get('workspaceSizeBytes') or entry.get('workspace_size'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="6">没有 kernel entry。</td></tr>'
+
+
+def _manifest_schedule_rows(entries: list[dict[str, Any]]) -> str:
+    rows = []
+    for kernel_entry in entries:
+        kernel_id = kernel_entry.get("kernel_id") or kernel_entry.get("kernelName")
+        for schedule in _manifest_schedule_entries(kernel_entry):
+            rows.append(
+                "<tr>"
+                f"<td>{_cell(kernel_id)}</td>"
+                f"<td>{_cell(schedule.get('decisionId') or schedule.get('decision_id'))}</td>"
+                f"<td>{_cell(schedule.get('guard'))}</td>"
+                f"<td>{_cell(schedule.get('fallback'))}</td>"
+                f"<td>{_cell(schedule.get('shapeBucketKey') or schedule.get('shape_bucket_key'))}</td>"
+                f"<td>{_cell(schedule.get('hostTilingId') or schedule.get('host_tiling_id'))}</td>"
+                f"<td>{_cell(schedule.get('blockDim') or schedule.get('block_dim'))}</td>"
+                f"<td>{_cell(schedule.get('workspaceSizeBytes') or schedule.get('workspace_size'))}</td>"
+                f"<td>{_cell(_manifest_tile_param_names(schedule))}</td>"
+                "</tr>"
+            )
+    return "\n".join(rows) or '<tr><td colspan="9">没有 schedule entry。</td></tr>'
+
+
+def _manifest_abi_rows(entries: list[dict[str, Any]]) -> str:
+    rows = []
+    for kernel_entry in entries:
+        kernel_id = kernel_entry.get("kernel_id") or kernel_entry.get("kernelName")
+        abi = kernel_entry.get("abi")
+        if not isinstance(abi, dict):
+            continue
+        for direction, key in (("input", "inputs"), ("output", "outputs")):
+            tensors = abi.get(key)
+            if not isinstance(tensors, list):
+                continue
+            for index, tensor in enumerate(tensors):
+                if not isinstance(tensor, dict):
+                    continue
+                rows.append(
+                    "<tr>"
+                    f"<td>{_cell(kernel_id)}</td>"
+                    f"<td>{direction}</td>"
+                    f"<td>{_cell(index)}</td>"
+                    f"<td>{_cell(tensor.get('name'))}</td>"
+                    f"<td>{_cell(tensor.get('dtype'))}</td>"
+                    f"<td>{_cell(_shape_summary(tensor.get('shape')))}</td>"
+                    "</tr>"
+                )
+    return "\n".join(rows) or '<tr><td colspan="6">没有 ABI tensor 描述。</td></tr>'
+
+
+def _manifest_host_tiling_rows(manifest: dict[str, Any]) -> str:
+    bindings = manifest.get("hostTilingBindings")
+    if not isinstance(bindings, list):
+        return '<tr><td colspan="5">没有 host tiling binding。</td></tr>'
+    rows = []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        symbols = binding.get("symbols") if isinstance(binding.get("symbols"), dict) else {}
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(binding.get('id'))}</td>"
+            f"<td>{_cell(binding.get('library'))}</td>"
+            f"<td>{_cell(symbols.get('getTiling'))}</td>"
+            f"<td>{_cell(symbols.get('getBlockDim'))}</td>"
+            f"<td>{_cell(symbols.get('getWorkspaceSize'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5">没有 host tiling binding。</td></tr>'
+
+
+def _manifest_tiling_schema_rows(manifest: dict[str, Any]) -> str:
+    schema = manifest.get("tilingSchema")
+    if not isinstance(schema, list):
+        return '<tr><td colspan="4">没有 tiling schema。</td></tr>'
+    rows = []
+    for field in schema:
+        if not isinstance(field, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(field.get('name'))}</td>"
+            f"<td>{_cell(field.get('type'))}</td>"
+            f"<td>{_cell(field.get('fixed'))}</td>"
+            f"<td>{_cell(_value_list(field.get('values')) if isinstance(field.get('values'), list) else field.get('shape_key'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="4">没有 tiling schema。</td></tr>'
+
+
+def _render_artifact_manifest_dashboard_view(
+    *,
+    run_dir: pathlib.Path,
+    view_rel_path: str,
+    rel_path: str,
+    manifest: dict[str, Any],
+) -> str:
+    entries = _manifest_kernel_entries(manifest)
+    schedule_count = sum(len(_manifest_schedule_entries(entry)) for entry in entries)
+    graph = manifest.get("kernelGraph") if isinstance(manifest.get("kernelGraph"), dict) else {}
+    graph_nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    graph_edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    dag_href = ""
+    if (run_dir / "graphs/kernel_dag.svg").exists():
+        dag_href = html.escape(_relative_href(view_rel_path, "graphs/kernel_dag.svg"), quote=True)
+    dag_section = (
+        f'<iframe class="dag-frame" src="{dag_href}" title="Kernel DAG"></iframe>'
+        if dag_href
+        else '<div class="empty-state">这个 run 还没有生成 Kernel DAG SVG。</div>'
+    )
+    body = f"""
+<div class="summary-card-grid">
+{_summary_card("Kernels", len(entries))}
+{_summary_card("Schedule Entries", schedule_count)}
+{_summary_card("Graph Nodes", len(graph_nodes))}
+{_summary_card("Graph Edges", len(graph_edges))}
+{_summary_card("Kernel Kind", manifest.get('kernelKind'))}
+</div>
+<section class="panel">
+<h2>Kernel DAG</h2>
+{dag_section}
+</section>
+<section class="panel">
+<h2>Kernels</h2>
+<table>
+<thead><tr><th>Kernel</th><th>Kind</th><th>Inputs</th><th>Outputs</th><th>Schedules</th><th>Workspace Bytes</th></tr></thead>
+<tbody>{_manifest_kernel_rows(entries)}</tbody>
+</table>
+</section>
+<section class="panel">
+<h2>Schedule Entries</h2>
+<table>
+<thead><tr><th>Kernel</th><th>Decision</th><th>Guard</th><th>Fallback</th><th>Bucket</th><th>Host Tiling</th><th>Block Dim</th><th>Workspace</th><th>Tile Params</th></tr></thead>
+<tbody>{_manifest_schedule_rows(entries)}</tbody>
+</table>
+</section>
+<section class="panel">
+<h2>ABI Tensors</h2>
+<table>
+<thead><tr><th>Kernel</th><th>Direction</th><th>Index</th><th>Name</th><th>DType</th><th>Shape</th></tr></thead>
+<tbody>{_manifest_abi_rows(entries)}</tbody>
+</table>
+</section>
+<section class="panel">
+<h2>Host Tiling Bindings</h2>
+<table>
+<thead><tr><th>ID</th><th>Library</th><th>GetTiling</th><th>GetBlockDim</th><th>GetWorkspaceSize</th></tr></thead>
+<tbody>{_manifest_host_tiling_rows(manifest)}</tbody>
+</table>
+</section>
+<section class="panel">
+<h2>Tiling Schema</h2>
+<table>
+<thead><tr><th>Name</th><th>Type</th><th>Fixed</th><th>Values / Shape Key</th></tr></thead>
+<tbody>{_manifest_tiling_schema_rows(manifest)}</tbody>
+</table>
+</section>
+"""
+    return _summary_page_document(
+        view_rel_path=view_rel_path,
+        rel_path=rel_path,
+        title="Artifact Manifest Dashboard",
+        body=body,
+    )
+
+
 def _render_typed_json_view(view_rel_path: str, rel_path: str, parsed: Any) -> str | None:
     if not isinstance(parsed, dict):
         return None
@@ -1367,6 +1678,108 @@ input.addEventListener("input", () => {{
     return view_rel_path
 
 
+def _render_artifact_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
+    source_path = run_dir / rel_path
+    if not source_path.exists():
+        return None
+    view_rel_path = _artifact_view_rel_path(rel_path)
+    view_path = run_dir / view_rel_path
+    raw_href = html.escape(_relative_href(view_rel_path, rel_path), quote=True)
+    dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
+    try:
+        source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        if rel_path.endswith(".json"):
+            try:
+                parsed = json.loads(source_text)
+                if rel_path == "artifact_manifest.json" and isinstance(parsed, dict):
+                    layout.write_text(
+                        view_path,
+                        _render_artifact_manifest_dashboard_view(
+                            run_dir=run_dir,
+                            view_rel_path=view_rel_path,
+                            rel_path=rel_path,
+                            manifest=parsed,
+                        ),
+                    )
+                    return view_rel_path
+                source_text = json.dumps(parsed, indent=2, ensure_ascii=False)
+            except json.JSONDecodeError:
+                pass
+    except OSError as error:
+        raise CommandError(f"could not read artifact view source: {source_path}: {error}") from error
+
+    lines = source_text.splitlines() or [""]
+    line_rows = []
+    for line_number, line in enumerate(lines, start=1):
+        escaped_line = html.escape(line)
+        line_rows.append(
+            '<tr class="line-row">'
+            f'<td class="gutter"><a href="#L{line_number}" id="L{line_number}">'
+            f'<span class="line-number">{line_number}</span></a></td>'
+            f'<td class="code"><pre>{escaped_line}</pre></td>'
+            "</tr>"
+        )
+
+    document = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{_cell(pathlib.PurePosixPath(rel_path).name)} - ascend-debug</title>
+<style>
+:root {{ color-scheme: light; }}
+body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #eef2f7; }}
+header {{ position: sticky; top: 0; z-index: 1; padding: 0.75rem 1rem; background: #ffffff; border-bottom: 1px solid #cbd5e1; }}
+h1 {{ font-size: 1rem; margin: 0 0 0.5rem 0; }}
+.toolbar {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
+input {{ min-width: 18rem; padding: 0.35rem 0.5rem; border: 1px solid #94a3b8; border-radius: 4px; color: #17202a; background: #ffffff; }}
+main {{ padding: 0.75rem 1rem 2rem; }}
+table.code-table {{ border-collapse: collapse; width: 100%; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; }}
+.code-table td {{ vertical-align: top; border-bottom: 1px solid #1e293b; }}
+.gutter {{ width: 4.5rem; text-align: right; padding: 0 0.65rem; background: #111827; user-select: none; }}
+.gutter a {{ color: #93a4bd; text-decoration: none; }}
+.code {{ padding-left: 0.75rem; }}
+.code pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; color: #dbeafe; background: transparent; }}
+.line-row:hover pre {{ background: #172033; }}
+.hidden {{ display: none; }}
+.match pre {{ background: #1d4ed8; color: #ffffff; }}
+</style>
+</head>
+<body>
+<header>
+<h1>{_cell(rel_path)}</h1>
+<div class="toolbar">
+<input id="search" type="search" placeholder="搜索 Artifact">
+<a href="{raw_href}">原始 Artifact</a>
+<a href="{dashboard_href}">调试首页</a>
+</div>
+</header>
+<main>
+<table class="code-table text-code-table">
+<tbody>
+{''.join(line_rows)}
+</tbody>
+</table>
+</main>
+<script>
+const input = document.getElementById("search");
+const rows = Array.from(document.querySelectorAll(".line-row"));
+input.addEventListener("input", () => {{
+  const needle = input.value.toLowerCase();
+  for (const row of rows) {{
+    const text = row.innerText.toLowerCase();
+    const matched = !needle || text.includes(needle);
+    row.classList.toggle("hidden", !matched);
+    row.classList.toggle("match", Boolean(needle && matched));
+  }}
+}});
+</script>
+</body>
+</html>
+"""
+    layout.write_text(view_path, document)
+    return view_rel_path
+
+
 def _render_stage_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
     stage_views = {}
     for stage in sorted(manifest["stages"], key=lambda item: item["order"]):
@@ -1405,6 +1818,17 @@ def _render_report_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dic
         if view_rel_path:
             report_views[rel_path] = view_rel_path
     return report_views
+
+
+def _render_artifact_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
+    artifact_views = {}
+    for artifact in manifest.get("artifacts", []):
+        rel_path = artifact.get("path") if isinstance(artifact, dict) else None
+        if isinstance(rel_path, str):
+            view_rel_path = _render_artifact_view(run_dir, rel_path)
+            if view_rel_path:
+                artifact_views[rel_path] = view_rel_path
+    return artifact_views
 
 
 def _render_json_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
@@ -1962,6 +2386,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     stage_graph_views = stage_graph.render_stage_graphs(run_dir, manifest["stages"])
     graph_views = _render_graph_mlir_views(run_dir, manifest)
     report_views = _render_report_views(run_dir, manifest)
+    artifact_views = _render_artifact_views(run_dir, manifest)
     run_status_section = _run_status_section(run_dir, manifest, report_views)
     kernel_summary = _load_kernel_summary(run_dir)
     memory_summary = _write_memory_summary(run_dir, kernel_summary)
@@ -2049,6 +2474,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <main>
 {debug_graph_section}
 {run_status_section}
+{_artifact_section(run_dir, manifest, artifact_views, report_views)}
 <section>
 <h2>{_cell(ui_text.text("overview_heading"))}</h2>
 <div class="overview-grid">

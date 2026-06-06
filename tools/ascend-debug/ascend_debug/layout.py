@@ -279,6 +279,7 @@ def write_manifest(
     commands: list[dict[str, Any]] | None = None,
     reports: list[dict[str, Any]] | None = None,
     graphs: list[dict[str, Any]] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
 ) -> None:
     def stage_record(stage: StageArtifact) -> dict[str, Any]:
         record: dict[str, Any] = {"order": stage.order, "name": stage.name, "path": stage.path}
@@ -306,6 +307,7 @@ def write_manifest(
         "commands": commands or [],
         "reports": reports or [],
         "graphs": graphs or [],
+        "artifacts": artifacts or [],
     }
     if input_path is not None:
         manifest["input"] = input_path

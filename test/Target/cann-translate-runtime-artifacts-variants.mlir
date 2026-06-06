@@ -18,7 +18,9 @@
 // MANIFEST: "structured_lowering": {
 // MANIFEST-DAG: "contract": "generic_tiled_loop"
 // MANIFEST-DAG: "loop_axes": [
-// MANIFEST-DAG: "arg0_dim0"
+// MANIFEST-DAG: "axis": 0
+// MANIFEST-DAG: "axis_kind": "parallel"
+// MANIFEST-DAG: "tile_param": "TB_M"
 // MANIFEST-DAG: "representation": "symbolic_marker_contract"
 // MANIFEST: "workspaceSizeBytes": 1024
 // MANIFEST: "blockDim": 1
@@ -90,7 +92,7 @@ module {
             contract = "generic_tiled_loop",
             double_buffer_marker = "none",
             guard_marker_count = 1 : i64,
-            loop_axes = ["arg0_dim0"],
+            loop_axes = [{axis = 0 : i64, axis_kind = "parallel", binding = "runtime", primitive_uses = ["data_copy", "vector_compute"], roles = ["kernel_loop"], tile_param = "TB_M"}],
             pipeline_marker = "none",
             representation = "symbolic_marker_contract",
             tail_marker_count = 1 : i64

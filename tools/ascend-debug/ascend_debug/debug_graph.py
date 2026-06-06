@@ -16,6 +16,49 @@ def _cell(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
 
+def _infer_stage_phase(name: Any) -> str:
+    text = str(name or "").lower()
+    if text == "source":
+        return "Source"
+    if "normalize" in text:
+        return "Normalize"
+    if "kernelize" in text:
+        return "Kernelize"
+    if "schedule" in text:
+        return "Schedule"
+    if "realize" in text:
+        return "Realize"
+    translate_markers = (
+        "compute-lower",
+        "parallelize",
+        "prepare-for-emit",
+        "cann-signature",
+    )
+    if any(marker in text for marker in translate_markers):
+        return "Translate"
+    if "kernel-dag" in text:
+        return "Kernel DAG"
+    return str(name or "Stage")
+
+
+def _stage_display_contract(stage: dict[str, Any]) -> dict[str, str]:
+    name = str(stage.get("name") or "")
+    phase = stage.get("phase")
+    step = stage.get("step")
+    step_info = stage.get("step_info")
+    if not isinstance(step_info, dict):
+        step_info = {}
+
+    stage_label = phase if isinstance(phase, str) and phase else _infer_stage_phase(name)
+    step_id = step if isinstance(step, str) and step else (name or "stage")
+    step_label = str(step_info.get("title") or step_id)
+    return {
+        "stage_label": stage_label,
+        "step_id": step_id,
+        "step_label": step_label,
+    }
+
+
 def _load_json(path: pathlib.Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -190,6 +233,7 @@ def _stage_record(
         "kernel_count": graph.get("kernel_count", 0),
         "graph": graph,
     }
+    record.update(_stage_display_contract(stage))
     for field in ("phase", "step"):
         value = stage.get(field)
         if isinstance(value, str) and value:
@@ -226,7 +270,7 @@ def _stage_brief(stage: dict[str, Any], index: int) -> dict[str, Any]:
         "path": stage.get("path"),
         "stage_view_path": stage.get("stage_view_path"),
     }
-    for field in ("phase", "step"):
+    for field in ("phase", "step", "stage_label", "step_id", "step_label"):
         value = stage.get(field)
         if isinstance(value, str) and value:
             brief[field] = value
@@ -237,6 +281,22 @@ def _stage_brief(stage: dict[str, Any], index: int) -> dict[str, Any]:
     if isinstance(same_as_previous, dict):
         brief["same_as_previous"] = same_as_previous
     return brief
+
+
+def _stage_brief_steps(
+    entries: list[tuple[int | None, dict[str, Any] | None]],
+) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any, Any]] = set()
+    for index, stage in entries:
+        if index is None or stage is None:
+            continue
+        key = (index, stage.get("order"), stage.get("path"))
+        if key in seen:
+            continue
+        seen.add(key)
+        steps.append(_stage_brief(stage, index))
+    return steps
 
 
 def _stage_connectivity_record(stage: dict[str, Any]) -> dict[str, Any]:
@@ -320,6 +380,7 @@ def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> 
                 "output_stage": source_brief,
                 "previous_output_stage": None,
                 "input_same_as_previous_output": False,
+                "steps": [source_brief],
             }
         )
         previous_output = source_entry
@@ -376,6 +437,12 @@ def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> 
             and previous_stage is not None
             and _stage_digest(run_dir, input_stage) == _stage_digest(run_dir, previous_stage)
         )
+        step_briefs = _stage_brief_steps(
+            [
+                (input_index, input_stage),
+                (output_index, output_stage),
+            ]
+        )
         groups.append(
             {
                 "name": name,
@@ -386,6 +453,7 @@ def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> 
                 "output_stage": _stage_brief(output_stage, output_index),
                 "previous_output_stage": _stage_brief(previous_stage, previous_index) if previous_stage is not None and previous_index is not None else None,
                 "input_same_as_previous_output": same_as_previous,
+                "steps": step_briefs,
             }
         )
         previous_output = output_entry
@@ -754,10 +822,14 @@ def _stage_group_children(group: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _stage_step_id_label(stage: dict[str, Any]) -> str:
+    step_id = stage.get("step_id")
+    if isinstance(step_id, str) and step_id:
+        return step_id
     step = stage.get("step")
     if isinstance(step, str) and step:
         return step
-    return "source" if stage.get("name") == "source" else "无 Step ID"
+    name = stage.get("name")
+    return str(name or "stage")
 
 
 def _stage_buttons(debug_graph: dict[str, Any]) -> str:
@@ -838,6 +910,10 @@ def _artifact_index(debug_graph: dict[str, Any]) -> str:
 <section>
 <h3>图数据</h3>
 <table><tbody>{_artifact_rows(artifacts.get('graphs', []))}</tbody></table>
+</section>
+<section>
+<h3>Kernel / Runtime</h3>
+<table><tbody>{_artifact_rows(artifacts.get('runtime', []))}</tbody></table>
 </section>
 <section>
 <h3>摘要</h3>
@@ -2173,19 +2249,21 @@ function stageStepInfo(stage) {
 
 function stageStageTitle(stage) {
   if (!stage) return "无";
+  if (stage.stage_label) return stage.stage_label;
   if (stage.phase) return stage.phase;
-  return stage.name === "source" ? "Source" : "无";
+  return stage.name === "source" ? "Source" : (stage.name || "Stage");
 }
 
 function stageStepTitle(stage) {
   const info = stageStepInfo(stage);
-  return info.title || (stage && stage.step) || "未命名 Step";
+  return (stage && stage.step_label) || info.title || (stage && stage.step) || (stage && stage.name) || "stage";
 }
 
 function stageStepId(stage) {
-  if (!stage) return "无 Step ID";
+  if (!stage) return "stage";
+  if (stage.step_id) return stage.step_id;
   if (stage.step) return stage.step;
-  return stage.name === "source" ? "source" : "无 Step ID";
+  return stage.name || "stage";
 }
 
 function stageGraphHeaderTitle(stage) {
@@ -3199,6 +3277,7 @@ def render_debug_graph(
             "commands": manifest.get("commands", []),
             "reports": manifest.get("reports", []),
             "graphs": manifest.get("graphs", []),
+            "runtime": manifest.get("artifacts", []),
             "summaries": _summary_paths(run_dir),
         },
         "summary_path": "summaries/debug_graph.json",

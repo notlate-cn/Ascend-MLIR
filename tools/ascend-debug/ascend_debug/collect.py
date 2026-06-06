@@ -29,7 +29,13 @@ FULL_CODEGEN_REPORTS = (
     ("cann-signature", "reports/090-cann-signature.report.txt"),
 )
 
+FULL_CODEGEN_TRANSLATE_REPORTS = (
+    ("translate-artifacts", "reports/100-translate-artifacts.report.txt"),
+    ("translate-kernel-fallback", "reports/101-translate-kernel-fallback.report.txt"),
+)
+
 KERNEL_DAG_REPORT = ("kernel-dag", "reports/050-kernel-dag.report.txt")
+FULL_CODEGEN_KERNEL_DAG_REPORT = ("kernel-dag", "reports/110-kernel-dag.report.txt")
 
 
 def _clear_artifacts(run_dir, stages, reports=()) -> None:
@@ -41,6 +47,18 @@ def _clear_artifacts(run_dir, stages, reports=()) -> None:
     (run_dir / "run_status.json").unlink(missing_ok=True)
     (run_dir / "provenance.json").unlink(missing_ok=True)
     (run_dir / "index.html").unlink(missing_ok=True)
+    for rel_path in (
+        "kernel.cpp",
+        "host_tiling.cpp",
+        "tiling_space.json",
+        "artifact_manifest.json",
+        "graphs/kernel_dag.svg",
+        "graphs/kernel_dag.summary.json",
+        "graphs/kernelized.mlir",
+        "graphs/artifact_manifest.json",
+        "graphs/run_manifest.json",
+    ):
+        (run_dir / rel_path).unlink(missing_ok=True)
     shutil.rmtree(run_dir / "debug_contract", ignore_errors=True)
 
 
@@ -51,6 +69,183 @@ def _record_command(stage: str, args: list[str], stdout_path: str, report_path: 
         args=args,
         stdout=stdout_path,
         stderr=report_path,
+    )
+
+
+def _record_translate_command(
+    stage: str,
+    args: list[str],
+    stdout_path: str,
+    report_path: str,
+) -> dict:
+    return failure.command_record(
+        stage=stage,
+        tool="ascend-mlir-translate",
+        args=args,
+        stdout=stdout_path,
+        stderr=report_path,
+    )
+
+
+def _artifact_record(
+    *,
+    run_dir: pathlib.Path,
+    kind: str,
+    label: str,
+    path: str,
+    diagnostic: str | None = None,
+    failed: bool = False,
+) -> dict:
+    exists = (run_dir / path).exists()
+    status = "available" if exists else ("failed" if failed else "missing")
+    record = {
+        "kind": kind,
+        "label": label,
+        "path": path,
+        "status": status,
+    }
+    if diagnostic:
+        record["diagnostic"] = diagnostic
+    return record
+
+
+def _full_codegen_artifact_records(
+    run_dir: pathlib.Path,
+    *,
+    failed_diagnostic: str | None = None,
+    kernel_diagnostic: str | None = None,
+) -> list[dict]:
+    failed = failed_diagnostic is not None
+    return [
+        _artifact_record(
+            run_dir=run_dir,
+            kind="kernel-cpp",
+            label="CANN Kernel C++",
+            path="kernel.cpp",
+            diagnostic=None
+            if (run_dir / "kernel.cpp").exists()
+            else (kernel_diagnostic or failed_diagnostic),
+            failed=failed,
+        ),
+        _artifact_record(
+            run_dir=run_dir,
+            kind="host-tiling-cpp",
+            label="Host Tiling C++",
+            path="host_tiling.cpp",
+            diagnostic=failed_diagnostic,
+            failed=failed,
+        ),
+        _artifact_record(
+            run_dir=run_dir,
+            kind="tiling-space",
+            label="Tiling Space JSON",
+            path="tiling_space.json",
+            diagnostic=failed_diagnostic,
+            failed=failed,
+        ),
+        _artifact_record(
+            run_dir=run_dir,
+            kind="artifact-manifest",
+            label="Artifact Manifest JSON",
+            path="artifact_manifest.json",
+            diagnostic=failed_diagnostic,
+            failed=failed,
+        ),
+    ]
+
+
+def _run_full_codegen_translate(
+    *,
+    run_dir: pathlib.Path,
+    input_rel: str,
+    soc: str,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    translate = find_tool("ascend-mlir-translate")
+    commands: list[dict] = []
+    reports: list[dict] = []
+    artifact_stage, artifact_report_rel = FULL_CODEGEN_TRANSLATE_REPORTS[0]
+    artifact_args = [
+        "-mlir-to-cann",
+        input_rel,
+        "--tiling-space-out=tiling_space.json",
+        "--artifact-manifest-out=artifact_manifest.json",
+        "--host-tiling-out=host_tiling.cpp",
+        f"--cann-soc={soc}",
+        "-o",
+        "kernel.cpp",
+    ]
+    try:
+        run_command(
+            [translate, *artifact_args],
+            stderr_report_path=run_dir / artifact_report_rel,
+            cwd=run_dir,
+        )
+        commands.append(
+            _record_translate_command(
+                artifact_stage,
+                artifact_args,
+                "kernel.cpp",
+                artifact_report_rel,
+            )
+        )
+        reports.append({"stage": artifact_stage, "path": artifact_report_rel})
+        return commands, reports, _full_codegen_artifact_records(run_dir)
+    except CommandError as error:
+        commands.append(
+            failure.failed_command_record(
+                stage=artifact_stage,
+                tool="ascend-mlir-translate",
+                args=artifact_args,
+                stdout="kernel.cpp",
+                stderr=artifact_report_rel,
+                error=error,
+            )
+        )
+        reports.append({"stage": artifact_stage, "path": artifact_report_rel})
+
+    fallback_stage, fallback_report_rel = FULL_CODEGEN_TRANSLATE_REPORTS[1]
+    fallback_args = [
+        "-mlir-to-cann",
+        input_rel,
+        "-o",
+        "kernel.cpp",
+    ]
+    try:
+        run_command(
+            [translate, *fallback_args],
+            stderr_report_path=run_dir / fallback_report_rel,
+            cwd=run_dir,
+        )
+        commands.append(
+            _record_translate_command(
+                fallback_stage,
+                fallback_args,
+                "kernel.cpp",
+                fallback_report_rel,
+            )
+        )
+    except CommandError as error:
+        commands.append(
+            failure.failed_command_record(
+                stage=fallback_stage,
+                tool="ascend-mlir-translate",
+                args=fallback_args,
+                stdout="kernel.cpp",
+                stderr=fallback_report_rel,
+                error=error,
+            )
+        )
+    reports.append({"stage": fallback_stage, "path": fallback_report_rel})
+    return (
+        commands,
+        reports,
+        _full_codegen_artifact_records(
+            run_dir,
+            failed_diagnostic=artifact_report_rel,
+            kernel_diagnostic=None
+            if (run_dir / "kernel.cpp").exists()
+            else fallback_report_rel,
+        ),
     )
 
 
@@ -225,6 +420,7 @@ def _collect_graph_artifacts(
     run_dir: pathlib.Path,
     default_kernelized_ir: pathlib.Path,
     contract_bundle: contracts.ContractBundle | None = None,
+    report_record: tuple[str, str] = KERNEL_DAG_REPORT,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     if not _graph_requested(args) and not _contract_graph_requested(contract_bundle):
         return [], [], []
@@ -236,7 +432,7 @@ def _collect_graph_artifacts(
     reports: list[dict] = []
     svg_rel = "graphs/kernel_dag.svg"
     summary_rel = "graphs/kernel_dag.summary.json"
-    report_stage, report_rel = KERNEL_DAG_REPORT
+    report_stage, report_rel = report_record
 
     if contract_bundle and contract_bundle.has(kernel_dag.KERNEL_DAG_CONTRACT_SCHEMA):
         if args.artifact_manifest:
@@ -382,6 +578,104 @@ def _collect_graph_artifacts(
             {"kind": "kernel-dag-summary", "path": summary_rel},
         ]
     )
+    return commands, reports, graphs
+
+
+def _write_generated_kernel_dag_failure_report(
+    *,
+    run_dir: pathlib.Path,
+    report_rel: str,
+    tool_args: list[str],
+    error: BaseException,
+) -> None:
+    layout.write_text(
+        run_dir / report_rel,
+        "command: ascend-debug "
+        + shlex.join(tool_args)
+        + "\nexit_code: internal\nstderr:\n"
+        + str(error)
+        + "\n",
+    )
+
+
+def _collect_generated_kernel_dag_artifacts(
+    *,
+    run_dir: pathlib.Path,
+    artifact_manifest_rel: str,
+    default_kernelized_ir: pathlib.Path,
+    report_record: tuple[str, str],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    artifact_manifest_path = run_dir / artifact_manifest_rel
+    if not artifact_manifest_path.exists():
+        return [], [], []
+
+    commands: list[dict] = []
+    reports: list[dict] = []
+    graphs: list[dict] = [
+        {"kind": "artifact-manifest", "path": artifact_manifest_rel},
+    ]
+    kernelized_rel = "graphs/kernelized.mlir"
+    kernelized_dst = run_dir / kernelized_rel
+    layout.copy_stage(default_kernelized_ir, kernelized_dst)
+    graphs.append({"kind": "kernelized-ir", "path": kernelized_rel})
+
+    svg_rel = "graphs/kernel_dag.svg"
+    summary_rel = "graphs/kernel_dag.summary.json"
+    report_stage, report_rel = report_record
+    tool_args = [
+        "--artifact-manifest",
+        artifact_manifest_rel,
+        "--kernelized-ir",
+        kernelized_rel,
+        "--svg-out",
+        svg_rel,
+        "--summary-out",
+        summary_rel,
+        "--kernel-view-base",
+        "../views/kernels",
+    ]
+    try:
+        summary = kernel_dag.analyze_paths(
+            artifact_manifest_path=artifact_manifest_path,
+            run_manifest_path=None,
+            kernelized_ir=kernelized_dst,
+        )
+        kernel_dag.render_svg(summary, run_dir / svg_rel, "../views/kernels")
+        kernel_dag.write_summary(summary, run_dir / summary_rel)
+        kernel_dag.write_report(summary, run_dir / report_rel)
+        commands.append(
+            {
+                "stage": report_stage,
+                "tool": "ascend-debug",
+                "args": tool_args,
+                "stdout": report_rel,
+                "status": "success",
+            }
+        )
+        graphs.extend(
+            [
+                {"kind": "kernel-dag-svg", "path": svg_rel},
+                {"kind": "kernel-dag-summary", "path": summary_rel},
+            ]
+        )
+    except BaseException as error:
+        _write_generated_kernel_dag_failure_report(
+            run_dir=run_dir,
+            report_rel=report_rel,
+            tool_args=tool_args,
+            error=error,
+        )
+        commands.append(
+            failure.command_record(
+                stage=report_stage,
+                tool="ascend-debug",
+                args=tool_args,
+                stdout=report_rel,
+                status="failed",
+                message=str(error),
+            )
+        )
+    reports.append({"stage": report_stage, "path": report_rel})
     return commands, reports, graphs
 
 
@@ -586,7 +880,15 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
 
     stages = layout.FULL_CODEGEN_STAGES
     layout.prepare_run_dir(run_dir)
-    _clear_artifacts(run_dir, stages, FULL_CODEGEN_REPORTS)
+    _clear_artifacts(
+        run_dir,
+        stages,
+        (
+            *FULL_CODEGEN_REPORTS,
+            *FULL_CODEGEN_TRANSLATE_REPORTS,
+            FULL_CODEGEN_KERNEL_DAG_REPORT,
+        ),
+    )
 
     if not input_path.exists():
         raise CommandError(f"input MLIR does not exist: {input_path}")
@@ -696,12 +998,26 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
                 )
             )
 
+        artifact_commands, artifact_reports, artifacts = _run_full_codegen_translate(
+            run_dir=run_dir,
+            input_rel=stage_rels["090-cann-signature-out"],
+            soc=soc,
+        )
+
         graph_commands, graph_reports, graphs = _collect_graph_artifacts(
             args=args,
             run_dir=run_dir,
             default_kernelized_ir=stage_paths["030-kernelize-out"],
             contract_bundle=contract_bundle,
+            report_record=FULL_CODEGEN_KERNEL_DAG_REPORT,
         )
+        if not graphs:
+            graph_commands, graph_reports, graphs = _collect_generated_kernel_dag_artifacts(
+                run_dir=run_dir,
+                artifact_manifest_rel="artifact_manifest.json",
+                default_kernelized_ir=stage_paths["030-kernelize-out"],
+                report_record=FULL_CODEGEN_KERNEL_DAG_REPORT,
+            )
     except CommandError as error:
         _write_collect_failure_manifest(
             args=args,
@@ -713,8 +1029,10 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
             error=error,
         )
         raise
+    commands.extend(artifact_commands)
     commands.extend(graph_commands)
     reports = [{"stage": name, "path": path} for name, path in FULL_CODEGEN_REPORTS]
+    reports.extend(artifact_reports)
     reports.extend(graph_reports)
     manifest_stages = tuple(
         stage for stage in stages if (run_dir / stage.path).exists()
@@ -729,6 +1047,7 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
         commands=commands,
         reports=reports,
         graphs=[*contract_graphs, *graphs],
+        artifacts=artifacts,
     )
     layout.write_provenance_skeleton(
         run_dir,

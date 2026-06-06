@@ -57,6 +57,7 @@ def run_command(
     *,
     stdout_path: pathlib.Path | None = None,
     stderr_report_path: pathlib.Path | None = None,
+    cwd: pathlib.Path | None = None,
 ) -> CommandResult:
     if stdout_path:
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +82,7 @@ def run_command(
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            cwd=cwd,
         )
     except BaseException:
         run_failed = True
