@@ -1488,6 +1488,87 @@ def _kernel_link_list(kernel_ids: list[str], current_view: str) -> str:
     return ", ".join(links)
 
 
+def _list_cell(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    return ", ".join(_cell(item) for item in value)
+
+
+def _tile_param_summary(param: Any) -> str:
+    if not isinstance(param, dict):
+        return _cell(param)
+    fields = []
+    for label, key in (
+        ("axis", "axis"),
+        ("kind", "axis_kind"),
+        ("binding", "binding"),
+        ("default", "default"),
+        ("upper", "upper_bound"),
+        ("extent", "extent"),
+    ):
+        value = param.get(key)
+        if value is not None and value != [] and value is not False:
+            fields.append(f"{label}={_cell(value)}")
+    name = _cell(param.get("name") or "tile")
+    suffix = " ".join(fields)
+    return f"{name} ({suffix})" if suffix else name
+
+
+def _tile_params_cell(params: Any) -> str:
+    if not isinstance(params, list) or not params:
+        return "none"
+    return "<br>".join(_tile_param_summary(param) for param in params)
+
+
+def _structured_lowering_cell(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none"
+    pieces = []
+    for label, key in (
+        ("contract", "contract"),
+        ("representation", "representation"),
+        ("loop_axes", "loop_axes"),
+        ("guard_marker_count", "guard_marker_count"),
+        ("tail_marker_count", "tail_marker_count"),
+        ("cache_read_marker", "cache_read_marker"),
+        ("cache_write_marker", "cache_write_marker"),
+        ("pipeline_marker", "pipeline_marker"),
+        ("double_buffer_marker", "double_buffer_marker"),
+    ):
+        current = value.get(key)
+        if current is None or current == [] or current is False:
+            continue
+        display = _list_cell(current) if isinstance(current, list) else _cell(current)
+        pieces.append(f"{label}={display}")
+    if not pieces:
+        return "none"
+    return "structured_lowering: " + "<br>".join(pieces)
+
+
+def _schedule_entry_rows(entries: Any) -> str:
+    rows = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(entry.get('decision_id'))}</td>"
+            f"<td>{_cell(entry.get('guard'))}</td>"
+            f"<td>{_cell(entry.get('priority'))}</td>"
+            f"<td>{_cell(entry.get('fallback'))}</td>"
+            f"<td>{_cell(entry.get('shape_bucket_key'))}</td>"
+            f"<td>{_cell(entry.get('host_tiling_id'))}</td>"
+            f"<td>{_cell(entry.get('block_dim'))}</td>"
+            f"<td>{_cell(entry.get('workspace_size'))}</td>"
+            f"<td>{_tile_params_cell(entry.get('tile_params'))}</td>"
+            f"<td>{_structured_lowering_cell(entry.get('structured_lowering'))}</td>"
+            "</tr>"
+        )
+    if not rows:
+        rows.append('<tr><td colspan="10">没有 schedule entry 诊断信息。</td></tr>')
+    return "\n".join(rows)
+
+
 def _render_kernel_views(
     run_dir: pathlib.Path,
     summary: dict[str, Any] | None,
@@ -1526,6 +1607,11 @@ def _render_kernel_views(
             ("output_shape", node.get("output_shape")),
             ("output_dtype", node.get("output_dtype")),
             ("workspace_size", node.get("workspace_size")),
+            ("schedule_entry_count", node.get("schedule_entry_count")),
+            ("guarded_schedule_entry_count", node.get("guarded_schedule_entry_count")),
+            ("fallback_schedule_entry_count", node.get("fallback_schedule_entry_count")),
+            ("host_tiling_ids", _list_cell(node.get("host_tiling_ids"))),
+            ("tile_param_names", _list_cell(node.get("tile_param_names"))),
             ("is_root", node.get("is_root")),
             ("is_leaf", node.get("is_leaf")),
             ("is_prepack_candidate_root", node.get("is_prepack_candidate_root")),
@@ -1606,6 +1692,11 @@ th {{ background: #f1f5f9; }}
 <tr><th>上游</th><td>{upstream}</td></tr>
 <tr><th>下游</th><td>{downstream}</td></tr>
 </tbody></table>
+<h2>Schedule Entries</h2>
+<table>
+<thead><tr><th>Decision</th><th>Guard</th><th>Priority</th><th>Fallback</th><th>Shape Bucket</th><th>Host Tiling</th><th>Block Dim</th><th>Workspace</th><th>Tile Params</th><th>Structured Lowering</th></tr></thead>
+<tbody>{_schedule_entry_rows(node.get('schedule_entries'))}</tbody>
+</table>
 <h2>MLIR Ops</h2>
 <table>
 <thead><tr><th>行号</th><th>Operation</th><th>标签</th><th>角色</th><th>结果类型</th></tr></thead>

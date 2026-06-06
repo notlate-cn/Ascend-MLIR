@@ -72,6 +72,8 @@ static constexpr llvm::StringLiteral kKernelMetadataWorkspaceSizeExprKey =
 static constexpr llvm::StringLiteral kKernelMetadataWorkspaceSizeBytesKey =
     "workspace_size_bytes";
 static constexpr llvm::StringLiteral kKernelMetadataBlockDimKey = "block_dim";
+static constexpr llvm::StringLiteral kKernelMetadataStructuredLoweringKey =
+    "structured_lowering";
 
 static SmallVector<func::FuncOp> collectGlobalKernels(ModuleOp module) {
   SmallVector<func::FuncOp> kernels;
@@ -1154,6 +1156,52 @@ buildScheduleTilingParams(func::FuncOp funcOp,
       tailPlanJson.push_back(std::move(tailPlanObject));
     }
     tilingParams["tail_plan"] = std::move(tailPlanJson);
+  }
+
+  if (Attribute rawStructuredLoweringAttr = getScheduleMetadataAttr(
+          funcOp, kernelMetadata,
+          ::mlir::ascend::kScheduleStructuredLoweringAttr,
+          kKernelMetadataStructuredLoweringKey)) {
+    auto structuredLowering =
+        dyn_cast<DictionaryAttr>(rawStructuredLoweringAttr);
+    if (!structuredLowering)
+      return funcOp.emitError()
+             << ::mlir::ascend::kScheduleStructuredLoweringAttr
+             << " must be a dictionary attribute";
+
+    llvm::json::Object structuredLoweringJson;
+    for (StringRef key :
+         {"contract", "representation", "cache_read_marker",
+          "cache_write_marker", "pipeline_marker", "double_buffer_marker"}) {
+      if (auto value =
+              dyn_cast_or_null<StringAttr>(structuredLowering.get(key)))
+        structuredLoweringJson[key] = value.getValue().str();
+    }
+    for (StringRef key : {"guard_marker_count", "tail_marker_count"}) {
+      if (auto value =
+              dyn_cast_or_null<IntegerAttr>(structuredLowering.get(key))) {
+        if (!value.getType().isInteger(64))
+          return funcOp.emitError()
+                 << ::mlir::ascend::kScheduleStructuredLoweringAttr
+                 << " field '" << key << "' must be an i64 integer attribute";
+        structuredLoweringJson[key] = value.getInt();
+      }
+    }
+    if (auto loopAxes =
+            dyn_cast_or_null<ArrayAttr>(structuredLowering.get("loop_axes"))) {
+      llvm::json::Array loopAxesJson;
+      for (auto [index, axisAttr] : llvm::enumerate(loopAxes)) {
+        auto axis = dyn_cast<StringAttr>(axisAttr);
+        if (!axis)
+          return funcOp.emitError()
+                 << ::mlir::ascend::kScheduleStructuredLoweringAttr
+                 << " field 'loop_axes' element " << index
+                 << " must be a string attribute";
+        loopAxesJson.push_back(axis.getValue().str());
+      }
+      structuredLoweringJson["loop_axes"] = std::move(loopAxesJson);
+    }
+    tilingParams["structured_lowering"] = std::move(structuredLoweringJson);
   }
 
   return tilingParams;

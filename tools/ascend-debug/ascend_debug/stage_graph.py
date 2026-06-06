@@ -337,6 +337,30 @@ def _extract_tile_params_attr(text: str) -> list[dict[str, Any]]:
     return params
 
 
+def _extract_structured_lowering_attr(text: str) -> dict[str, Any]:
+    body = _extract_balanced_attr_value(
+        text, "ascend.schedule.structured_lowering", "{", "}"
+    )
+    if body is None:
+        return {}
+    fields = {
+        key: value
+        for key, value in {
+            "contract": _extract_field_string(body, "contract"),
+            "representation": _extract_field_string(body, "representation"),
+            "loop_axes": _extract_field_string_list(body, "loop_axes"),
+            "guard_marker_count": _extract_field_int(body, "guard_marker_count"),
+            "tail_marker_count": _extract_field_int(body, "tail_marker_count"),
+            "cache_read_marker": _extract_field_string(body, "cache_read_marker"),
+            "cache_write_marker": _extract_field_string(body, "cache_write_marker"),
+            "pipeline_marker": _extract_field_string(body, "pipeline_marker"),
+            "double_buffer_marker": _extract_field_string(body, "double_buffer_marker"),
+        }.items()
+        if value is not None and value != [] and value is not False
+    }
+    return fields
+
+
 def _extract_symbol_constraints_attr(text: str) -> list[dict[str, Any]] | None:
     body = _extract_balanced_attr_value(text, "ascend.symbol_constraints", "[", "]")
     if body is None:
@@ -476,6 +500,7 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
             ),
             "tile_binding": _extract_attr(op_text, "ascend.schedule.tile_binding"),
             "tile_params": _extract_tile_params_attr(op_text),
+            "structured_lowering": _extract_structured_lowering_attr(op_text),
             "tail_policies": _extract_string_list_attr(
                 op_text, "ascend.schedule.tail_policies"
             ),

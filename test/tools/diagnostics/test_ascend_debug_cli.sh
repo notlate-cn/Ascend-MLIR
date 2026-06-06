@@ -221,6 +221,17 @@ tile_mlir = """module {
         {axis = 0 : i64, axis_kind = "parallel", binding = "runtime", default = 70 : i64, extent = 70 : i64, name = "TB_M", primitive_uses = ["data_copy", "vector_compute", "write_back"], roles = ["bind_core", "kernel_loop"], upper_bound = 70 : i64},
         {axis = 1 : i64, axis_kind = "parallel", binding = "runtime", default = 70 : i64, extent = 128 : i64, name = "TB_N", primitive_uses = ["data_copy", "vector_compute", "write_back"], roles = ["kernel_loop", "vectorize"], upper_bound = 70 : i64}
       ],
+      ascend.schedule.structured_lowering = {
+        cache_read_marker = "metadata_deferred",
+        cache_write_marker = "metadata_deferred",
+        contract = "generic_tiled_loop",
+        double_buffer_marker = "none",
+        guard_marker_count = 2 : i64,
+        loop_axes = ["arg0_dim0", "arg0_dim1"],
+        pipeline_marker = "none",
+        representation = "symbolic_marker_contract",
+        tail_marker_count = 1 : i64
+      },
       ascend.schedule.target_tile_policy = "target_ub_70"
     } {
     ^bb0(%x: f16, %y: f16, %o: f16):
@@ -238,6 +249,11 @@ assert schedule["tile_binding"] == "symbolic", schedule
 assert [param["name"] for param in schedule["tile_params"]] == ["TB_M", "TB_N"], schedule
 assert schedule["tile_params"][0]["default"] == 70, schedule
 assert schedule["tile_params"][1]["extent"] == 128, schedule
+assert schedule["structured_lowering"]["contract"] == "generic_tiled_loop", schedule
+assert schedule["structured_lowering"]["representation"] == "symbolic_marker_contract", schedule
+assert schedule["structured_lowering"]["loop_axes"] == ["arg0_dim0", "arg0_dim1"], schedule
+assert schedule["structured_lowering"]["guard_marker_count"] == 2, schedule
+assert schedule["structured_lowering"]["tail_marker_count"] == 1, schedule
 assert "tile TB_M/TB_N" in tile_node["badges"], tile_node["badges"]
 
 schedule_report = """ScheduleProblem:
@@ -1231,6 +1247,83 @@ cat >"${TMP_DIR}/artifact_manifest.json" <<'JSON'
       "kernel_id": "kernel_0",
       "kernelKind": "vec",
       "scheduleEntries": [
+        {
+          "decisionId": "kernel_0.decision.fast",
+          "kernelName": "elementwise",
+          "guard": "arg0_dim0 <= 128",
+          "priority": 0,
+          "fallback": false,
+          "shapeBucketKey": "rank2.small",
+          "hostTilingId": "kernel_0.host_tiling.fast",
+          "blockDim": 20,
+          "workspaceSizeBytes": 4096,
+          "tilingParams": {
+            "tile_binding": "symbolic",
+            "tile_params": [
+              {
+                "name": "T_arg0_dim0",
+                "axis": 0,
+                "axisKind": "parallel",
+                "binding": "runtime",
+                "default": 64,
+                "upperBound": 128,
+                "extent": -1,
+                "roles": ["bind_core", "kernel_loop"],
+                "primitiveUses": ["data_copy", "vector_compute", "write_back"]
+              }
+            ],
+            "tail_policies": ["masked_tail"],
+            "structured_lowering": {
+              "contract": "generic_tiled_loop",
+              "representation": "symbolic_marker_contract",
+              "loop_axes": ["arg0_dim0"],
+              "guard_marker_count": 1,
+              "tail_marker_count": 1,
+              "cache_read_marker": "metadata_deferred",
+              "cache_write_marker": "metadata_deferred",
+              "pipeline_marker": "none",
+              "double_buffer_marker": "none"
+            }
+          }
+        },
+        {
+          "decisionId": "kernel_0.decision.fallback",
+          "kernelName": "elementwise",
+          "guard": "true",
+          "priority": 99,
+          "fallback": true,
+          "shapeBucketKey": "rank2.fallback",
+          "hostTilingId": "kernel_0.host_tiling.fallback",
+          "blockDim": 1,
+          "workspaceSizeBytes": 8192,
+          "tilingParams": {
+            "tile_binding": "symbolic",
+            "tile_params": [
+              {
+                "name": "T_arg0_dim0",
+                "axis": 0,
+                "axisKind": "parallel",
+                "binding": "runtime",
+                "default": 16,
+                "upperBound": 128,
+                "extent": -1,
+                "roles": ["kernel_loop"],
+                "primitiveUses": ["data_copy", "vector_compute"]
+              }
+            ],
+            "structured_lowering": {
+              "contract": "generic_tiled_loop",
+              "representation": "symbolic_marker_contract",
+              "loop_axes": ["arg0_dim0"],
+              "guard_marker_count": 0,
+              "tail_marker_count": 0,
+              "cache_read_marker": "metadata_deferred",
+              "cache_write_marker": "metadata_deferred",
+              "pipeline_marker": "none",
+              "double_buffer_marker": "none"
+            }
+          }
+        }
       ],
       "workspaceSizeBytes": 4096
     }
@@ -1306,6 +1399,10 @@ test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
 test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.summary.json"
 test -f "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
 grep -Fq 'ascend_debug.kernel_dag.kernel_count=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
+grep -Fq 'ascend_debug.kernel_dag.schedule_entries=2' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
+grep -Fq 'ascend_debug.kernel_dag.guarded_schedule_entries=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
+grep -Fq 'ascend_debug.kernel_dag.fallback_schedule_entries=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
+grep -Fq 'ascend_debug.kernel_dag.kernel.kernel_0.schedule_entries=2' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
 echo "ascend_debug.collect_graph=ok"
 
 cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
@@ -1915,6 +2012,23 @@ assert all("added_count" in item for item in graph["stage_diffs"])
 assert any(item["to_stage"]["name"] == "kernelize-out" for item in graph["stage_diffs"])
 assert graph["kernel_dag"]["kernel_count"] == 1
 assert graph["kernel_dag"]["nodes"]["kernel_0"]["output_shape"] == "?x?"
+kernel_0 = graph["kernel_dag"]["nodes"]["kernel_0"]
+assert kernel_0["schedule_entry_count"] == 2, kernel_0
+assert kernel_0["guarded_schedule_entry_count"] == 1, kernel_0
+assert kernel_0["fallback_schedule_entry_count"] == 1, kernel_0
+assert kernel_0["host_tiling_ids"] == ["kernel_0.host_tiling.fallback", "kernel_0.host_tiling.fast"], kernel_0
+assert kernel_0["tile_param_names"] == ["T_arg0_dim0"], kernel_0
+first_entry = kernel_0["schedule_entries"][0]
+assert first_entry["decision_id"] == "kernel_0.decision.fast", first_entry
+assert first_entry["priority"] == 0, first_entry
+assert first_entry["tile_params"][0]["axis"] == 0, first_entry
+assert first_entry["tile_params"][0]["axis_kind"] == "parallel", first_entry
+assert first_entry["tile_params"][0]["upper_bound"] == 128, first_entry
+assert first_entry["structured_lowering"]["contract"] == "generic_tiled_loop", first_entry
+assert first_entry["structured_lowering"]["loop_axes"] == ["arg0_dim0"], first_entry
+fallback_entry = kernel_0["schedule_entries"][1]
+assert fallback_entry["structured_lowering"]["guard_marker_count"] == 0, fallback_entry
+assert fallback_entry["structured_lowering"]["tail_marker_count"] == 0, fallback_entry
 assert graph["overlays"]["tensor_diff"]["status"] == "fail"
 assert graph["overlays"]["locate"]["first_bad_kernel"] == "kernel_0"
 assert graph["overlays"]["memory"]["peak_workspace_bytes"] == 256
@@ -1987,6 +2101,12 @@ grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-
 grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size</th><td>4096' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'schedule_entry_count</th><td>2' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'Schedule Entries' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'kernel_0.decision.fast' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'kernel_0.host_tiling.fast' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'structured_lowering' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'T_arg0_dim0' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'output_shape</th><td>?x?' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'MLIR Ops' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../graphs/kernelized.mlir.html#L' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
@@ -2007,6 +2127,9 @@ grep -Fq '<h1>Locate 摘要</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/lo
 test ! -e "${TMP_DIR}/debug-run-graph/views/summaries/debug_graph.json.html"
 grep -Fq '内存视图' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'summaries/memory.json.html#kernel-' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'renderKernelDagScheduleEntries' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Schedule Entries' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'schedule_entry_count' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'UB 分配' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../summaries/memory.json.html#kernel-kernel_0' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"

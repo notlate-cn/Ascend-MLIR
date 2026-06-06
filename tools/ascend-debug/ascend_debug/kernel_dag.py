@@ -38,6 +38,123 @@ def normalize_kind(entry: dict[str, Any] | None) -> str:
     return kind if kind in VALID_KERNEL_KINDS else "vec"
 
 
+def first_present(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
+def has_diagnostic_value(value: Any) -> bool:
+    return value is not None and value != [] and value is not False
+
+
+def normalize_tile_param(param: Any) -> dict[str, Any]:
+    if not isinstance(param, dict):
+        return {}
+    normalized = {
+        key: value
+        for key, value in {
+            "name": param.get("name"),
+            "axis": param.get("axis"),
+            "axis_kind": first_present(param, "axis_kind", "axisKind"),
+            "binding": param.get("binding"),
+            "default": param.get("default"),
+            "upper_bound": first_present(param, "upper_bound", "upperBound"),
+            "extent": param.get("extent"),
+            "roles": param.get("roles"),
+            "primitive_uses": first_present(param, "primitive_uses", "primitiveUses"),
+        }.items()
+        if has_diagnostic_value(value)
+    }
+    return normalized
+
+
+def normalize_structured_lowering(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: current
+        for key, current in {
+            "contract": value.get("contract"),
+            "representation": value.get("representation"),
+            "loop_axes": value.get("loop_axes"),
+            "guard_marker_count": value.get("guard_marker_count"),
+            "tail_marker_count": value.get("tail_marker_count"),
+            "cache_read_marker": value.get("cache_read_marker"),
+            "cache_write_marker": value.get("cache_write_marker"),
+            "pipeline_marker": value.get("pipeline_marker"),
+            "double_buffer_marker": value.get("double_buffer_marker"),
+        }.items()
+        if has_diagnostic_value(current)
+    }
+
+
+def summarize_schedule_entry(entry: Any) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {}
+    tiling_params = entry.get("tilingParams")
+    if not isinstance(tiling_params, dict):
+        tiling_params = {}
+    raw_tile_params = tiling_params.get("tile_params")
+    if not isinstance(raw_tile_params, list):
+        raw_tile_params = []
+    tile_params = [
+        normalized
+        for normalized in (normalize_tile_param(param) for param in raw_tile_params)
+        if normalized
+    ]
+    structured_lowering = normalize_structured_lowering(
+        tiling_params.get("structured_lowering")
+    )
+    summary = {
+        key: value
+        for key, value in {
+            "decision_id": first_present(entry, "decision_id", "decisionId"),
+            "kernel_name": first_present(entry, "kernel_name", "kernelName"),
+            "guard": entry.get("guard"),
+            "priority": entry.get("priority"),
+            "fallback": entry.get("fallback"),
+            "shape_bucket_key": first_present(entry, "shape_bucket_key", "shapeBucketKey"),
+            "host_tiling_id": first_present(entry, "host_tiling_id", "hostTilingId"),
+            "block_dim": first_present(entry, "block_dim", "blockDim"),
+            "workspace_size": first_present(
+                entry, "workspace_size", "workspaceSizeBytes"
+            ),
+            "workspace_size_expr": first_present(
+                entry, "workspace_size_expr", "workspaceSizeExpr"
+            ),
+            "profile_cost": first_present(entry, "profile_cost", "profileCost"),
+            "tile_binding": tiling_params.get("tile_binding"),
+            "tile_params": tile_params,
+            "tail_policies": tiling_params.get("tail_policies"),
+            "structured_lowering": structured_lowering,
+        }.items()
+        if has_diagnostic_value(value)
+    }
+    if entry.get("fallback") is False:
+        summary["fallback"] = False
+    return summary
+
+
+def summarize_schedule_entries(kernel_entry: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not kernel_entry:
+        return []
+    raw_entries = kernel_entry.get("scheduleEntries")
+    if not isinstance(raw_entries, list):
+        return []
+    return [
+        summary
+        for summary in (summarize_schedule_entry(entry) for entry in raw_entries)
+        if summary
+    ]
+
+
+def is_guarded_schedule_entry(entry: dict[str, Any]) -> bool:
+    guard = str(entry.get("guard") or "").strip()
+    return bool(guard and guard != "true")
+
+
 def compact_shape(shape: Any) -> str:
     if shape is None:
         return "?"
@@ -299,6 +416,22 @@ def analyze(
     for kernel_id in kernel_ids:
         task = tasks_by_id.get(kernel_id)
         output = first_output(task)
+        schedule_entries = summarize_schedule_entries(entries_by_id.get(kernel_id))
+        host_tiling_ids = sorted(
+            {
+                entry["host_tiling_id"]
+                for entry in schedule_entries
+                if isinstance(entry.get("host_tiling_id"), str)
+            }
+        )
+        tile_param_names = sorted(
+            {
+                param["name"]
+                for entry in schedule_entries
+                for param in entry.get("tile_params", [])
+                if isinstance(param, dict) and isinstance(param.get("name"), str)
+            }
+        )
         nodes[kernel_id] = {
             "kind": normalize_kind(entries_by_id.get(kernel_id)),
             "depth": depth.get(kernel_id, 1),
@@ -311,6 +444,16 @@ def analyze(
                 if task and "workspace_size" in task
                 else entries_by_id.get(kernel_id, {}).get("workspaceSizeBytes", 0)
             ),
+            "schedule_entry_count": len(schedule_entries),
+            "guarded_schedule_entry_count": sum(
+                1 for entry in schedule_entries if is_guarded_schedule_entry(entry)
+            ),
+            "fallback_schedule_entry_count": sum(
+                1 for entry in schedule_entries if entry.get("fallback") is True
+            ),
+            "host_tiling_ids": host_tiling_ids,
+            "tile_param_names": tile_param_names,
+            "schedule_entries": schedule_entries,
             "ops": op_summaries.get(kernel_id, []),
             "is_root": kernel_id in roots,
             "is_leaf": kernel_id in leaves,
@@ -319,10 +462,29 @@ def analyze(
             "touches_simple_fusion_edge": kernel_id in fusion_nodes,
         }
 
+    host_tiling_bindings = artifact_manifest.get("hostTilingBindings")
+    if not isinstance(host_tiling_bindings, list):
+        host_tiling_bindings = []
+    schedule_entry_count = sum(
+        node["schedule_entry_count"] for node in nodes.values()
+    )
+    guarded_schedule_entry_count = sum(
+        node["guarded_schedule_entry_count"] for node in nodes.values()
+    )
+    fallback_schedule_entry_count = sum(
+        node["fallback_schedule_entry_count"] for node in nodes.values()
+    )
+
     return {
         "kernel_count": len(kernel_ids),
         "task_count": len(tasks_by_id),
         "graph_edges": len(edges),
+        "schedule_entry_count": schedule_entry_count,
+        "guarded_schedule_entry_count": guarded_schedule_entry_count,
+        "fallback_schedule_entry_count": fallback_schedule_entry_count,
+        "host_tiling_binding_count": len(
+            [item for item in host_tiling_bindings if isinstance(item, dict)]
+        ),
         "kind_counts": {kind: kind_counts.get(kind, 0) for kind in VALID_KERNEL_KINDS},
         "root_tasks": len(roots),
         "root_task_ids": roots,
@@ -509,13 +671,29 @@ def render_svg(summary: dict[str, Any], out: Path, kernel_view_base: str | None 
             f'in:{node["input_degree"]} out:{node["output_degree"]}  '
             f'out:{node["output_shape"]} {node["output_dtype"]}'
         ).strip()
-        tile_line = f'workspace:{node["workspace_size"]}'
+        schedule_line = (
+            f'schedule:{node["schedule_entry_count"]}'
+            f' guarded:{node["guarded_schedule_entry_count"]}'
+            f' fallback:{node["fallback_schedule_entry_count"]}'
+        )
+        tile_line = f'workspace:{node["workspace_size"]} {schedule_line}'
         title_lines = [
             kernel_id,
             f'kind={node["kind"]}',
             io_line,
             f'workspace_size={node["workspace_size"]}',
+            f'schedule_entry_count={node["schedule_entry_count"]}',
+            f'host_tiling_ids={",".join(node["host_tiling_ids"])}',
+            f'tile_param_names={",".join(node["tile_param_names"])}',
         ]
+        for entry in node["schedule_entries"]:
+            decision = entry.get("decision_id") or "schedule"
+            title_lines.append(
+                f'{decision}: guard={entry.get("guard", "")} '
+                f'priority={entry.get("priority", "")} '
+                f'fallback={entry.get("fallback", "")} '
+                f'host_tiling={entry.get("host_tiling_id", "")}'
+            )
         for op in node["ops"]:
             detail = f'L{op["line"]}: {op["op"]}'
             if op.get("result_type"):
@@ -591,14 +769,25 @@ def analyze_paths(
 
 
 def report_lines(summary: dict[str, Any]) -> list[str]:
-    return [
+    lines = [
         f"ascend_debug.kernel_dag.kernel_count={summary['kernel_count']}",
         f"ascend_debug.kernel_dag.graph_edges={summary['graph_edges']}",
+        f"ascend_debug.kernel_dag.schedule_entries={summary['schedule_entry_count']}",
+        f"ascend_debug.kernel_dag.guarded_schedule_entries={summary['guarded_schedule_entry_count']}",
+        f"ascend_debug.kernel_dag.fallback_schedule_entries={summary['fallback_schedule_entry_count']}",
+        f"ascend_debug.kernel_dag.host_tiling_bindings={summary['host_tiling_binding_count']}",
         f"ascend_debug.kernel_dag.root_tasks={summary['root_tasks']}",
         f"ascend_debug.kernel_dag.prepack_candidate_roots={summary['prepack_candidate_roots']}",
         f"ascend_debug.kernel_dag.critical_path_depth={summary['critical_path_depth']}",
         f"ascend_debug.kernel_dag.simple_fusion_edges={len(summary['simple_fusion_edges'])}",
     ]
+    for kernel_id in sorted(summary.get("nodes", {}), key=kernel_sort_key):
+        node = summary["nodes"][kernel_id]
+        lines.append(
+            f"ascend_debug.kernel_dag.kernel.{kernel_id}.schedule_entries="
+            f"{node.get('schedule_entry_count', 0)}"
+        )
+    return lines
 
 
 def write_report(summary: dict[str, Any], out: Path) -> None:

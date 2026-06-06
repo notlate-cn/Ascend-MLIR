@@ -1389,6 +1389,21 @@ function tileParamsHtml(params) {
   return `<div class="tile-param-list">${cards}</div>`;
 }
 
+function structuredLoweringHtml(info) {
+  if (!info || typeof info !== "object" || !Object.keys(info).length) return "";
+  return semanticDetailRows([
+    ["contract", info.contract],
+    ["representation", info.representation],
+    ["loop_axes", info.loop_axes],
+    ["guard_marker_count", info.guard_marker_count],
+    ["tail_marker_count", info.tail_marker_count],
+    ["cache_read_marker", info.cache_read_marker],
+    ["cache_write_marker", info.cache_write_marker],
+    ["pipeline_marker", info.pipeline_marker],
+    ["double_buffer_marker", info.double_buffer_marker],
+  ]);
+}
+
 function functionInfoForNode(node) {
   if (!node || !node.function) return {};
   const stage = activeStage();
@@ -1504,10 +1519,12 @@ ${renderSemanticGroup("Schedule", [
   ["schedule_family", schedule.family],
   ["schedule_template", schedule.template],
   ["schedule_contract", schedule.schedule_contract],
+  ["structured_lowering", schedule.structured_lowering ? "present" : null],
   ["tail_policies", schedule.tail_policies],
   ["target_tile_policy", schedule.target_tile_policy],
   ["runtime_top_k", schedule.runtime_top_k],
 ])}
+${renderSemanticGroupBody("Structured Lowering", structuredLoweringHtml(schedule.structured_lowering))}
 ${renderSemanticGroup("Schedule Axis Contract", [
   ["source", axisContract.source],
   ["role", axisContract.role],
@@ -1582,6 +1599,64 @@ function tensorDiffForKernel(kernelId) {
   const tensorDiff = workspace.overlay_details && workspace.overlay_details.tensor_diff ? workspace.overlay_details.tensor_diff : {};
   const comparisons = Array.isArray(tensorDiff.comparisons) ? tensorDiff.comparisons : [];
   return comparisons.find((item) => item && (item.kernel_id === kernelId || item.task_id === kernelId)) || null;
+}
+
+function renderKernelDagScheduleEntries(entries) {
+  if (!Array.isArray(entries) || !entries.length) return "<p>没有 schedule entry 诊断信息。</p>";
+  const rows = entries.map((entry) => {
+    const tileParams = tileParamsHtml(entry.tile_params) || "无";
+    const structured = structuredLoweringHtml(entry.structured_lowering) || "无";
+    return `<tr>
+<td>${escapeHtml(entry.decision_id)}</td>
+<td>${escapeHtml(entry.guard)}</td>
+<td>${escapeHtml(entry.priority)}</td>
+<td>${escapeHtml(entry.fallback)}</td>
+<td>${escapeHtml(entry.shape_bucket_key)}</td>
+<td>${escapeHtml(entry.host_tiling_id)}</td>
+<td>${escapeHtml(entry.block_dim)}</td>
+<td>${escapeHtml(entry.workspace_size)}</td>
+<td>${tileParams}</td>
+<td>${structured}</td>
+</tr>`;
+  }).join("");
+  return `<table class="detail-table">
+<thead><tr><th>Decision</th><th>Guard</th><th>Priority</th><th>Fallback</th><th>Shape Bucket</th><th>Host Tiling</th><th>Block Dim</th><th>Workspace</th><th>Tile Params</th><th>Structured Lowering</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>`;
+}
+
+function renderKernelDagNodeDetail(node) {
+  if (!node) return "<p>没有找到 Kernel DAG 节点。</p>";
+  const ops = Array.isArray(node.ops) ? node.ops : [];
+  const opRows = ops.length
+    ? ops.map((op) => `<tr><td>${escapeHtml(op.line)}</td><td>${escapeHtml(op.op)}</td><td>${escapeHtml(op.label)}</td><td>${escapeHtml(op.role)}</td><td>${escapeHtml(op.result_type)}</td></tr>`).join("")
+    : '<tr><td colspan="5">没有 MLIR op 摘要。</td></tr>';
+  return `
+<section class="inspector-section">
+<h3>Kernel DAG</h3>
+${detailRows([
+  ["kind", node.kind],
+  ["depth", node.depth],
+  ["input_degree", node.input_degree],
+  ["output_degree", node.output_degree],
+  ["output_shape", node.output_shape],
+  ["output_dtype", node.output_dtype],
+  ["workspace_size", node.workspace_size],
+  ["schedule_entry_count", node.schedule_entry_count],
+  ["guarded_schedule_entry_count", node.guarded_schedule_entry_count],
+  ["fallback_schedule_entry_count", node.fallback_schedule_entry_count],
+  ["host_tiling_ids", node.host_tiling_ids],
+  ["tile_param_names", node.tile_param_names],
+])}
+</section>
+<section class="inspector-section">
+<h3>Schedule Entries</h3>
+${renderKernelDagScheduleEntries(node.schedule_entries)}
+</section>
+<section class="inspector-section">
+<h3>MLIR Ops</h3>
+<table class="detail-table"><thead><tr><th>Line</th><th>Operation</th><th>Label</th><th>Role</th><th>Result</th></tr></thead><tbody>${opRows}</tbody></table>
+</section>`;
 }
 
 function kernelRuntimeStatus(kernelId) {
@@ -2917,7 +2992,7 @@ function selectKernel(kernelId, options = {}) {
   const kernelHref = kernelDetailHref(kernelId);
   const links = kernelHref ? [{label: "Kernel 详情", href: kernelHref}] : [];
   if (memoryHasKernel(kernelId)) links.push({label: "内存视图", href: memoryViewLink(kernelId)});
-  setInspector(`Kernel 详情：${kernelId}`, links);
+  setInspector(`Kernel 详情：${kernelId}`, links, renderKernelDagNodeDetail(node));
   if (options.center) {
     centerGraphElement(findKernelNodeElement(kernelId));
   }

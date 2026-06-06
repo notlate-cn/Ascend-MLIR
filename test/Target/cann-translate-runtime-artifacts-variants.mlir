@@ -15,6 +15,11 @@
 // MANIFEST: "guard": "arg0_dim0 <= 128"
 // MANIFEST: "priority": 0
 // MANIFEST: "shapeBucketKey": "M.small"
+// MANIFEST: "structured_lowering": {
+// MANIFEST-DAG: "contract": "generic_tiled_loop"
+// MANIFEST-DAG: "loop_axes": [
+// MANIFEST-DAG: "arg0_dim0"
+// MANIFEST-DAG: "representation": "symbolic_marker_contract"
 // MANIFEST: "workspaceSizeBytes": 1024
 // MANIFEST: "blockDim": 1
 // MANIFEST: "decisionId": "kernel_variant.fallback"
@@ -34,6 +39,8 @@
 // TILING: "kernel": "kernel_variant"
 // TILING: "scheduleEntries": [
 // TILING: "decisionId": "kernel_variant.small"
+// TILING: "structured_lowering": {
+// TILING-DAG: "contract": "generic_tiled_loop"
 // TILING: "shapeBucketKey": "M.small"
 // TILING: "decisionId": "kernel_variant.fallback"
 // TILING: "shapeBucketKey": "M.fallback"
@@ -77,6 +84,17 @@ module {
           kernel = "kernel_variant",
           priority = 0 : i64,
           shape_bucket_key = "M.small",
+          structured_lowering = {
+            cache_read_marker = "metadata_deferred",
+            cache_write_marker = "metadata_deferred",
+            contract = "generic_tiled_loop",
+            double_buffer_marker = "none",
+            guard_marker_count = 1 : i64,
+            loop_axes = ["arg0_dim0"],
+            pipeline_marker = "none",
+            representation = "symbolic_marker_contract",
+            tail_marker_count = 1 : i64
+          },
           tile_binding = "symbolic",
           tile_params = [{
             axis = 0 : i64,
@@ -107,6 +125,17 @@ module {
           kernel = "kernel_variant",
           priority = 99 : i64,
           shape_bucket_key = "M.fallback",
+          structured_lowering = {
+            cache_read_marker = "metadata_deferred",
+            cache_write_marker = "metadata_deferred",
+            contract = "generic_tiled_loop",
+            double_buffer_marker = "none",
+            guard_marker_count = 0 : i64,
+            loop_axes = ["arg0_dim0"],
+            pipeline_marker = "none",
+            representation = "symbolic_marker_contract",
+            tail_marker_count = 0 : i64
+          },
           tile_binding = "symbolic",
           tile_params = [{
             axis = 0 : i64,
