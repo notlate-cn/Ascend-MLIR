@@ -1200,8 +1200,44 @@ assert any(command["stage"] == "kernel-dag" for command in manifest["commands"])
 assert any(report["stage"] == "kernel-dag" and report["path"] == "reports/110-kernel-dag.report.txt" for report in manifest["reports"]), manifest["reports"]
 PY
 ascend-debug open "${TMP_DIR}/debug-run-full-codegen" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen.txt"
-grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Command</th><th>Report</th></tr></thead>' \
+if grep -Fq '<h2>End-to-End Timeline</h2>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "index should merge End-to-End Timeline into Stage Timeline" >&2
+  exit 1
+fi
+if grep -Fq '<h2>Kernel / Runtime Artifacts</h2>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "index should merge Kernel / Runtime Artifacts into Stage Timeline" >&2
+  exit 1
+fi
+grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Artifacts / Contracts</th><th>Command</th><th>Report</th></tr></thead>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'class="timeline-attachment-cell" data-lane-id="translate"' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'class="timeline-attachment-cell" data-lane-id="artifacts"' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'class="timeline-source-badge legacy_adapter"' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'kernel.cpp' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'host_tiling.cpp' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'artifact_manifest.json' "${TMP_DIR}/debug-run-full-codegen/index.html"
+PYTHONPATH="${REPO_ROOT}/tools/ascend-debug${PYTHONPATH:+:${PYTHONPATH}}" \
+  python3 - "${TMP_DIR}/debug-run-full-codegen" <<'PY'
+import json
+import pathlib
+import sys
+
+from ascend_debug import timeline_model
+
+run_dir = pathlib.Path(sys.argv[1])
+manifest = json.loads((run_dir / "manifest.json").read_text())
+model = timeline_model.build_timeline_model(run_dir, manifest)
+lanes = {lane["id"]: lane for lane in model["lanes"]}
+translate = lanes["translate"]
+assert any(item["path"] == "kernel.cpp" for item in translate["artifacts"]), translate
+assert any(item["path"] == "host_tiling.cpp" for item in translate["artifacts"]), translate
+artifacts = lanes["artifacts"]
+assert any(item["path"] == "artifact_manifest.json" for item in artifacts["artifacts"]), artifacts
+assert model["source"] in ("legacy_adapter", "mixed"), model
+PY
 grep -Fq '识别可 Kernelize 的算子' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '挂载 Schedule 契约' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '标注内存空间' "${TMP_DIR}/debug-run-full-codegen/index.html"
@@ -1213,6 +1249,8 @@ grep -Fq 'th { background: #f1f5f9; text-align: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '.view-links { display: inline-flex; gap: 1rem; align-items: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '.timeline-attachment-cell { background: #ffffff; vertical-align: middle;' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td class="stage-group-cell" rowspan="5">Kernelize</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<div class="step-file">Dump: 021-kernelize-structured-ops</div>' \
@@ -1223,6 +1261,35 @@ if grep -Fq '<div class="step-title">021-kernelize-structured-ops</div>' "${TMP_
   exit 1
 fi
 test -f "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'class="stage-tree-group stage-artifact-lane" data-lane-id="artifacts"' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'class="stage-button stage-group-parent stage-artifact-parent"' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq '<span class="stage-group-main">Artifacts</span>' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'class="stage-button stage-child-button stage-artifact-link" href="artifacts/artifact_manifest.json.html"' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'class="stage-button stage-child-button stage-artifact-link" href="artifacts/kernel.cpp.html"' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'data-workbench-view-href="artifacts/kernel.cpp.html"' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'function openWorkbenchView' "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'class="workbench-view-frame"' "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'installWorkbenchViewLinks' "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq '.app-shell.document-mode { grid-template-columns: var(--sidebar-width) minmax(28rem, 1fr); }' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq '  .app-shell.document-mode { grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq '.app-shell.document-mode .inspector-panel { display: none; }' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'document.querySelector(".app-shell")?.classList.add("document-mode")' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq 'document.querySelectorAll(".stage-button[data-stage-index]")' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+if grep -Fq 'class="stage-artifact-source"' "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"; then
+  echo "artifact follow-up lanes should reuse Stage tree styling without visible source chips" >&2
+  exit 1
+fi
 grep -Fq '<span class="stage-child-title">structured-ops</span>' \
   "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
 grep -Fq '<span class="stage-child-title">ascend-kernelize</span>' \
@@ -1252,7 +1319,6 @@ grep -Fq ':root { color-scheme: light; }' "${TMP_DIR}/debug-run-full-codegen/vie
 grep -Fq '<pre>command:' "${TMP_DIR}/debug-run-full-codegen/views/reports/030-kernelize.report.txt.html"
 grep -Fq '<td class="stage-group-cell" rowspan="4">Translate</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq '<h2>Kernel / Runtime Artifacts</h2>' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<a href="views/artifacts/kernel.cpp.html">kernel.cpp</a>' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<a href="views/artifacts/artifact_manifest.json.html">artifact_manifest.json</a>' "${TMP_DIR}/debug-run-full-codegen/index.html"
 test -f "${TMP_DIR}/debug-run-full-codegen/views/artifacts/kernel.cpp.html"
@@ -2377,6 +2443,10 @@ if grep -Fq '当前节点没有 region body' "${TMP_DIR}/debug-run-graph/views/d
   exit 1
 fi
 grep -Fq '查看完整 MLIR' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-workbench-view-href="${escapeHtml(link.href)}"' \
+  "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'openWorkbenchView(href, title)' \
+  "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Kernel 详情' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'stage.stage_view_path' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'URLSearchParams' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -2705,7 +2775,7 @@ echo "ascend_debug.diff_fail=ok"
 ascend-debug open "${TMP_DIR}/debug-run-deep" --no-browser >"${TMP_DIR}/ascend-debug-open-deep.txt"
 test -f "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<span>mode</span><strong>quick</strong>' "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Command</th><th>Report</th></tr></thead>' \
+grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Artifacts / Contracts</th><th>Command</th><th>Report</th></tr></thead>' \
   "${TMP_DIR}/debug-run-deep/index.html"
 if grep -Fq '<th>状态</th>' "${TMP_DIR}/debug-run-deep/index.html"; then
   echo "Stage Timeline should not expose status column" >&2

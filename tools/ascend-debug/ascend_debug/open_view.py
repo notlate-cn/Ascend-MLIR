@@ -10,7 +10,7 @@ import sys
 import webbrowser
 from typing import Any
 
-from ascend_debug import debug_graph, layout, memory, stage_graph, ui_text
+from ascend_debug import debug_graph, layout, memory, stage_graph, timeline_model, ui_text
 from ascend_debug.runner import CommandError
 
 
@@ -420,12 +420,17 @@ def _stage_rows(
     stage_views: dict[str, str],
     report_views: dict[str, str],
     debug_graph_view_path: str,
+    timeline: dict[str, Any],
+    graph_views: dict[str, str],
+    artifact_views: dict[str, str],
+    json_views: dict[str, str],
 ) -> str:
     rows = []
     stages = sorted(manifest["stages"], key=lambda stage: stage["order"])
     spans = _row_group_spans(stages, _stage_group_label)
     commands_by_output = _commands_by_output_path(manifest)
     command_spans, commands_by_row = _stage_command_spans(stages, commands_by_output)
+    lanes_by_id = _timeline_lanes_by_id(timeline)
     for index, stage in enumerate(stages):
         step_info = stage.get("step_info") if isinstance(stage.get("step_info"), dict) else {}
         step_title = _stage_step_title(stage)
@@ -448,10 +453,24 @@ def _stage_rows(
         )
         group_cell = ""
         if spans[index]:
+            lane_id = _stage_lane_id_for_group(_stage_group_label(stage))
             group_cell = (
                 f'<td class="stage-group-cell" rowspan="{spans[index]}">'
                 f"{_cell(_stage_group_label(stage))}</td>"
             )
+            attachment_cell = _timeline_attachment_cell(
+                run_dir,
+                lane=lanes_by_id.get(lane_id),
+                lane_id=lane_id,
+                rowspan=spans[index],
+                stage_views=stage_views,
+                graph_views=graph_views,
+                artifact_views=artifact_views,
+                report_views=report_views,
+                json_views=json_views,
+            )
+        else:
+            attachment_cell = ""
         command_cell = ""
         report_cell = ""
         if command_spans[index]:
@@ -475,10 +494,23 @@ def _stage_rows(
             + (f'<div class="step-id">Step ID: {_cell(step_id)}</div>' if step_id else "")
             + f'<div class="step-file">Dump: {_cell(stage["name"])}</div>{step_detail}</td>'
             f'<td class="view-cell">{view_cell}</td>'
+            f"{attachment_cell}"
             f"{command_cell}"
             f"{report_cell}"
             "</tr>"
         )
+    rows.extend(
+        _timeline_synthetic_stage_rows(
+            run_dir,
+            lanes_by_id,
+            lane_ids=("artifacts", "runtime"),
+            stage_views=stage_views,
+            graph_views=graph_views,
+            artifact_views=artifact_views,
+            report_views=report_views,
+            json_views=json_views,
+        )
+    )
     return "\n".join(rows)
 
 
@@ -558,61 +590,248 @@ def _graph_rows(
     return "\n".join(rows)
 
 
-def _artifact_rows(
-    run_dir: pathlib.Path,
-    manifest: dict[str, Any],
+def _timeline_source_badge(source: Any) -> str:
+    if source not in ("contract", "legacy_adapter", "mixed"):
+        return ""
+    source_text = str(source)
+    source_class = html.escape(source_text, quote=True)
+    return f'<span class="timeline-source-badge {source_class}">{_cell(source_text)}</span>'
+
+
+def _timeline_view_path(
+    rel_path: str,
+    *,
+    stage_views: dict[str, str],
+    graph_views: dict[str, str],
     artifact_views: dict[str, str],
     report_views: dict[str, str],
+    json_views: dict[str, str],
+) -> str | None:
+    return (
+        stage_views.get(rel_path)
+        or graph_views.get(rel_path)
+        or artifact_views.get(rel_path)
+        or report_views.get(rel_path)
+        or json_views.get(rel_path)
+    )
+
+
+def _timeline_link_row(
+    run_dir: pathlib.Path,
+    item: dict[str, Any],
+    *,
+    stage_views: dict[str, str],
+    graph_views: dict[str, str],
+    artifact_views: dict[str, str],
+    report_views: dict[str, str],
+    json_views: dict[str, str],
 ) -> str:
+    rel_path = item.get("path")
+    if not isinstance(rel_path, str) or not rel_path:
+        return ""
+    view_path = _timeline_view_path(
+        rel_path,
+        stage_views=stage_views,
+        graph_views=graph_views,
+        artifact_views=artifact_views,
+        report_views=report_views,
+        json_views=json_views,
+    )
+    if view_path:
+        links = [_link(view_path, rel_path), _link(rel_path, "raw")]
+    else:
+        links = [_path_link(rel_path, exists=(run_dir / rel_path).exists())]
+    return '<span class="timeline-item-links">' + "".join(links) + "</span>"
+
+
+def _timeline_raw_detail(item: dict[str, Any]) -> str:
+    raw = item.get("raw")
+    if not isinstance(raw, dict) or not raw:
+        return ""
+    text = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True)
+    return (
+        '<details class="timeline-raw-detail">'
+        "<summary>raw</summary>"
+        f"<pre>{_cell(text)}</pre>"
+        "</details>"
+    )
+
+
+def _timeline_item_rows(
+    run_dir: pathlib.Path,
+    items: list[dict[str, Any]],
+    *,
+    empty_label: str,
+    stage_views: dict[str, str],
+    graph_views: dict[str, str],
+    artifact_views: dict[str, str],
+    report_views: dict[str, str],
+    json_views: dict[str, str],
+) -> str:
+    if not items:
+        return f'<li class="timeline-empty">{_cell(empty_label)}</li>'
     rows = []
-    for artifact in manifest.get("artifacts", []):
-        if not isinstance(artifact, dict):
-            continue
-        rel_path = str(artifact.get("path") or "")
-        exists = bool(rel_path) and (run_dir / rel_path).exists()
-        view_rel_path = artifact_views.get(rel_path)
-        diagnostic = artifact.get("diagnostic")
-        diagnostic_cell = ""
+    for item in items:
+        label = item.get("label") or item.get("kind") or item.get("path") or "item"
+        status = item.get("status")
+        status_text = f'<span class="timeline-status">{_cell(status)}</span>' if status else ""
+        diagnostic = item.get("diagnostic")
+        diagnostic_link = ""
         if isinstance(diagnostic, str) and diagnostic:
             diagnostic_view = report_views.get(diagnostic)
-            diagnostic_cell = (
-                _link(diagnostic_view, diagnostic)
-                if diagnostic_view
-                else _path_link(diagnostic, exists=(run_dir / diagnostic).exists())
+            diagnostic_link = (
+                '<span class="timeline-diagnostic">diagnostic '
+                + (_link(diagnostic_view, diagnostic) if diagnostic_view else _path_link(diagnostic, exists=(run_dir / diagnostic).exists()))
+                + "</span>"
             )
         rows.append(
-            "<tr>"
-            f"<td>{_cell(artifact.get('label') or artifact.get('kind'))}</td>"
-            f"<td>{_path_link(rel_path, exists=exists)}</td>"
-            f"<td>{_link(view_rel_path, rel_path) if view_rel_path else ''}</td>"
-            f"<td>{_cell(artifact.get('status'))}</td>"
-            f"<td>{diagnostic_cell}</td>"
-            "</tr>"
+            "<li>"
+            '<div class="timeline-item-head">'
+            f"<strong>{_cell(label)}</strong>"
+            f"{_timeline_source_badge(item.get('source'))}"
+            f"{status_text}"
+            "</div>"
+            f"{_timeline_link_row(run_dir, item, stage_views=stage_views, graph_views=graph_views, artifact_views=artifact_views, report_views=report_views, json_views=json_views)}"
+            f"{diagnostic_link}"
+            f"{_timeline_raw_detail(item)}"
+            "</li>"
         )
-    if not rows:
-        rows.append('<tr><td colspan="5">没有 runtime artifact 记录。</td></tr>')
     return "\n".join(rows)
 
 
-def _artifact_section(
+def _timeline_lanes_by_id(model: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    lanes: dict[str, dict[str, Any]] = {}
+    for lane in model.get("lanes", []):
+        if not isinstance(lane, dict):
+            continue
+        lane_id = lane.get("id")
+        if isinstance(lane_id, str) and lane_id:
+            lanes[lane_id] = lane
+    return lanes
+
+
+def _stage_lane_id_for_group(group: str) -> str:
+    lane_id = str(group or "").replace(" ", "-").lower()
+    mapping = {
+        "source": "source",
+        "normalize": "normalize",
+        "kernelize": "kernelize",
+        "schedule": "schedule",
+        "realize": "realize",
+        "translate": "translate",
+    }
+    return mapping.get(lane_id, "artifacts")
+
+
+def _timeline_lane_items(lane: dict[str, Any] | None, bucket: str) -> list[dict[str, Any]]:
+    if not isinstance(lane, dict):
+        return []
+    items = lane.get(bucket)
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _timeline_lane_has_attachments(lane: dict[str, Any] | None) -> bool:
+    return any(
+        _timeline_lane_items(lane, bucket)
+        for bucket in ("contracts", "artifacts", "diagnostics")
+    )
+
+
+def _timeline_attachment_blocks(
     run_dir: pathlib.Path,
-    manifest: dict[str, Any],
+    lane: dict[str, Any] | None,
+    *,
+    stage_views: dict[str, str],
+    graph_views: dict[str, str],
     artifact_views: dict[str, str],
     report_views: dict[str, str],
+    json_views: dict[str, str],
 ) -> str:
-    if not manifest.get("artifacts"):
-        return ""
-    return f"""
-<section>
-<h2>Kernel / Runtime Artifacts</h2>
-<table>
-<thead><tr><th>Artifact</th><th>Raw</th><th>View</th><th>Status</th><th>Diagnostic</th></tr></thead>
-<tbody>
-{_artifact_rows(run_dir, manifest, artifact_views, report_views)}
-</tbody>
-</table>
-</section>
-"""
+    blocks = []
+    for title, bucket in (
+        ("Contracts", "contracts"),
+        ("Artifacts", "artifacts"),
+        ("Diagnostics", "diagnostics"),
+    ):
+        items = _timeline_lane_items(lane, bucket)
+        if not items:
+            continue
+        blocks.append(
+            '<div class="timeline-attachment-block">'
+            f"<strong>{title}</strong>"
+            '<ul class="timeline-attachment-list">'
+            f"{_timeline_item_rows(run_dir, items, empty_label='', stage_views=stage_views, graph_views=graph_views, artifact_views=artifact_views, report_views=report_views, json_views=json_views)}"
+            "</ul>"
+            "</div>"
+        )
+    if not blocks:
+        return '<span class="timeline-empty">No attached contract/artifact</span>'
+    return "".join(blocks)
+
+
+def _timeline_attachment_cell(
+    run_dir: pathlib.Path,
+    *,
+    lane: dict[str, Any] | None,
+    lane_id: str,
+    rowspan: int = 1,
+    stage_views: dict[str, str],
+    graph_views: dict[str, str],
+    artifact_views: dict[str, str],
+    report_views: dict[str, str],
+    json_views: dict[str, str],
+) -> str:
+    source_badge = _timeline_source_badge(lane.get("source") if isinstance(lane, dict) else None)
+    header = f'<div class="timeline-attachment-head">{source_badge}</div>' if source_badge else ""
+    rowspan_text = _rowspan_attr(rowspan)
+    escaped_lane_id = html.escape(lane_id, quote=True)
+    return (
+        f'<td class="timeline-attachment-cell" data-lane-id="{escaped_lane_id}"{rowspan_text}>'
+        f"{header}"
+        f"{_timeline_attachment_blocks(run_dir, lane, stage_views=stage_views, graph_views=graph_views, artifact_views=artifact_views, report_views=report_views, json_views=json_views)}"
+        "</td>"
+    )
+
+
+def _timeline_synthetic_stage_rows(
+    run_dir: pathlib.Path,
+    lanes_by_id: dict[str, dict[str, Any]],
+    *,
+    lane_ids: tuple[str, ...],
+    stage_views: dict[str, str],
+    graph_views: dict[str, str],
+    artifact_views: dict[str, str],
+    report_views: dict[str, str],
+    json_views: dict[str, str],
+) -> list[str]:
+    rows = []
+    for lane_id in lane_ids:
+        lane = lanes_by_id.get(lane_id)
+        if not _timeline_lane_has_attachments(lane):
+            continue
+        title = lane.get("title") if isinstance(lane, dict) else lane_id.title()
+        rows.append(
+            "<tr>"
+            f'<td class="stage-group-cell">{_cell(title)}</td>'
+            f'<td><div class="step-title">{_cell(title)}</div><div class="step-file">Debug contract / artifact lane</div></td>'
+            '<td class="view-cell"><span class="muted">In attachments</span></td>'
+            + _timeline_attachment_cell(
+                run_dir,
+                lane=lane,
+                lane_id=lane_id,
+                stage_views=stage_views,
+                graph_views=graph_views,
+                artifact_views=artifact_views,
+                report_views=report_views,
+                json_views=json_views,
+            )
+            + '<td class="command-cell"><span class="muted">No standalone command</span></td>'
+            + '<td class="report-cell"></td>'
+            "</tr>"
+        )
+    return rows
 
 
 def _summary_rows(run_dir: pathlib.Path, json_views: dict[str, str]) -> str:
@@ -2410,6 +2629,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
         memory_summary,
     )
     _write_kernel_alias_views(run_dir, debug_graph_view)
+    timeline = timeline_model.build_timeline_model(run_dir, manifest)
     debug_graph_section = f"""
 <section class="primary-debug-section">
 <a class="primary-debug-link" href="{_cell(debug_graph_view['view_path'])}">{_cell(ui_text.text("open_debug_workbench"))}</a>
@@ -2455,6 +2675,30 @@ td.command-cell {{ max-width: 28rem; }}
 .failure-message {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #ffffff; color: #7f1d1d; border: 1px solid #fecaca; border-radius: 6px; padding: 0.5rem; }}
 .primary-debug-section {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 8px; padding: 0.9rem; margin: 1rem 0; }}
 .primary-debug-link {{ display: inline-block; padding: 0.45rem 0.7rem; background: #1d4ed8; color: #ffffff; border-radius: 6px; text-decoration: none; font-weight: 700; }}
+.section-title-row {{ display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap; }}
+.section-title-row h2 {{ margin: 0.83rem 0; }}
+.timeline-note {{ margin: -0.35rem 0 0.75rem; color: #475569; line-height: 1.45; }}
+.timeline-source-badge {{ border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 999px; color: #334155; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.7rem; padding: 0.12rem 0.38rem; white-space: nowrap; }}
+.timeline-source-badge.contract {{ border-color: #bbf7d0; background: #f0fdf4; color: #166534; }}
+.timeline-source-badge.legacy_adapter {{ border-color: #fed7aa; background: #fff7ed; color: #9a3412; }}
+.timeline-source-badge.mixed {{ border-color: #bfdbfe; background: #eff6ff; color: #1e40af; }}
+.timeline-attachment-cell {{ background: #ffffff; vertical-align: middle; min-width: 15rem; max-width: 30rem; }}
+.timeline-attachment-head {{ display: flex; justify-content: flex-end; margin-bottom: 0.3rem; }}
+.timeline-attachment-block {{ margin: 0.35rem 0 0; }}
+.timeline-attachment-block:first-child {{ margin-top: 0; }}
+.timeline-attachment-block > strong {{ display: block; color: #334155; font-size: 0.78rem; margin-bottom: 0.2rem; }}
+.timeline-attachment-list {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }}
+.timeline-attachment-list li {{ border-top: 1px solid #e2e8f0; padding-top: 0.35rem; min-width: 0; }}
+.timeline-attachment-list li:first-child {{ border-top: 0; padding-top: 0; }}
+.timeline-item-head {{ display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }}
+.timeline-item-head strong {{ font-size: 0.82rem; overflow-wrap: anywhere; }}
+.timeline-item-links {{ display: flex; gap: 0.45rem; flex-wrap: wrap; margin-top: 0.18rem; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.76rem; overflow-wrap: anywhere; }}
+.timeline-status {{ color: #475569; font-size: 0.72rem; }}
+.timeline-diagnostic {{ display: block; color: #64748b; font-size: 0.74rem; margin-top: 0.2rem; overflow-wrap: anywhere; }}
+.timeline-empty {{ color: #94a3b8; font-size: 0.78rem; }}
+.timeline-raw-detail {{ margin: 0.25rem 0 0; }}
+.timeline-raw-detail summary {{ font-size: 0.74rem; }}
+.timeline-raw-detail pre {{ margin: 0.25rem 0 0; padding: 0.35rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.72rem; }}
 .advanced-section {{ border: 1px solid #dbe3ee; background: #ffffff; border-radius: 8px; padding: 0.75rem; }}
 .advanced-section summary {{ cursor: pointer; font-weight: 700; }}
 dt {{ font-weight: 700; float: left; clear: left; margin-right: 0.4rem; }}
@@ -2474,7 +2718,6 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <main>
 {debug_graph_section}
 {run_status_section}
-{_artifact_section(run_dir, manifest, artifact_views, report_views)}
 <section>
 <h2>{_cell(ui_text.text("overview_heading"))}</h2>
 <div class="overview-grid">
@@ -2484,9 +2727,9 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <section>
 <h2>{_cell(ui_text.text("stage_timeline_heading"))}</h2>
 <table>
-<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("step_column"))}</th><th>{_cell(ui_text.text("view_column"))}</th><th>{_cell(ui_text.text("command_column"))}</th><th>{_cell(ui_text.text("report_column"))}</th></tr></thead>
+<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("step_column"))}</th><th>{_cell(ui_text.text("view_column"))}</th><th>Artifacts / Contracts</th><th>{_cell(ui_text.text("command_column"))}</th><th>{_cell(ui_text.text("report_column"))}</th></tr></thead>
 <tbody>
-{_stage_rows(run_dir, manifest, stage_views, report_views, debug_graph_view['view_path'])}
+{_stage_rows(run_dir, manifest, stage_views, report_views, debug_graph_view['view_path'], timeline, graph_views, artifact_views, json_views)}
 </tbody>
 </table>
 </section>

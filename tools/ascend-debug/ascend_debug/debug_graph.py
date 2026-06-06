@@ -7,7 +7,7 @@ import pathlib
 import re
 from typing import Any
 
-from ascend_debug import layout, stage_graph
+from ascend_debug import layout, stage_graph, timeline_model
 
 PHASE_ORDER = ("Normalize", "Kernelize", "Schedule", "Realize", "Translate")
 
@@ -821,6 +821,136 @@ def _stage_group_children(group: dict[str, Any]) -> list[dict[str, Any]]:
     return children
 
 
+def _debug_artifact_href(rel_path: str) -> str:
+    if rel_path.endswith(".cpp") or rel_path in {"artifact_manifest.json", "tiling_space.json"}:
+        return f"artifacts/{rel_path}.html"
+    if rel_path.startswith("reports/"):
+        return f"reports/{rel_path.removeprefix('reports/')}.html"
+    if rel_path.startswith("summaries/"):
+        return f"summaries/{rel_path.removeprefix('summaries/')}.html"
+    if rel_path.startswith("graphs/") and rel_path.endswith(".mlir"):
+        return f"graphs/{rel_path.removeprefix('graphs/')}.html"
+    return f"../{rel_path}"
+
+
+def _timeline_lane_debug_items(lane: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    seen_paths: set[str] = set()
+    for bucket, bucket_label in (
+        ("contracts", "Contract"),
+        ("artifacts", "Artifact"),
+        ("diagnostics", "Diagnostic"),
+    ):
+        raw_items = lane.get(bucket)
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            rel_path = item.get("path")
+            if isinstance(rel_path, str) and rel_path:
+                if rel_path in seen_paths:
+                    continue
+                seen_paths.add(rel_path)
+            label = item.get("label") or item.get("kind") or rel_path or bucket_label
+            record = {
+                "bucket": bucket_label,
+                "label": str(label),
+                "source": item.get("source"),
+                "status": item.get("status"),
+            }
+            if isinstance(rel_path, str) and rel_path:
+                record["path"] = rel_path
+                record["href"] = _debug_artifact_href(rel_path)
+                record["raw_href"] = f"../{rel_path}"
+            items.append(record)
+    return items
+
+
+def _build_timeline_followup_lanes(
+    run_dir: pathlib.Path,
+    manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
+    model = timeline_model.build_timeline_model(run_dir, manifest)
+    lanes = []
+    for lane in model.get("lanes", []):
+        if not isinstance(lane, dict):
+            continue
+        lane_id = lane.get("id")
+        if lane_id not in ("translate", "artifacts", "runtime"):
+            continue
+        items = _timeline_lane_debug_items(lane)
+        if not items:
+            continue
+        title = lane.get("title") or str(lane_id).title()
+        if lane_id == "translate":
+            title = "Translate Artifacts"
+        lanes.append(
+            {
+                "id": lane_id,
+                "title": title,
+                "source": lane.get("source"),
+                "items": items,
+            }
+        )
+    return lanes
+
+
+def _stage_artifact_lanes(debug_graph: dict[str, Any]) -> str:
+    lanes = debug_graph.get("timeline_lanes")
+    if not isinstance(lanes, list):
+        return ""
+    lane_sections = []
+    for lane in lanes:
+        if not isinstance(lane, dict):
+            continue
+        lane_id = str(lane.get("id") or "")
+        title = str(lane.get("title") or lane_id or "Artifacts")
+        items = lane.get("items")
+        if not isinstance(items, list) or not items:
+            continue
+        links = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            href = item.get("href")
+            label = path if isinstance(path, str) and path else item.get("label")
+            if isinstance(href, str) and href:
+                source = item.get("source")
+                title_attr = (
+                    f' title="source: {_cell(source)}"'
+                    if isinstance(source, str) and source
+                    else ""
+                )
+                item_link = (
+                    f'<a class="stage-button stage-child-button stage-artifact-link" '
+                    f'href="{_cell(href)}" data-workbench-view-href="{_cell(href)}" '
+                    f'data-workbench-view-title="{_cell(label)}"{title_attr}>'
+                    f'<span class="stage-child-title">{_cell(label)}</span>'
+                    "</a>"
+                )
+            else:
+                item_link = (
+                    '<span class="stage-button stage-child-button stage-artifact-link">'
+                    f'<span class="stage-child-title">{_cell(label)}</span>'
+                    "</span>"
+                )
+            links.append(item_link)
+        lane_sections.append(
+            f'<div class="stage-tree-group stage-artifact-lane" data-lane-id="{_cell(lane_id)}">'
+            '<div class="stage-button stage-group-parent stage-artifact-parent">'
+            f'<span class="stage-group-main">{_cell(title)}</span>'
+            f'<small class="stage-group-meta">{len(links)} 项</small>'
+            "</div>"
+            f'<div class="stage-child-list">{"".join(links)}</div>'
+            "</div>"
+        )
+    if not lane_sections:
+        return ""
+    return f'<div class="stage-followup-lanes">{"".join(lane_sections)}</div>'
+
+
 def _stage_step_id_label(stage: dict[str, Any]) -> str:
     step_id = stage.get("step_id")
     if isinstance(step_id, str) and step_id:
@@ -882,6 +1012,9 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
                 f'<div class="stage-child-list">{"".join(child_buttons)}</div>'
                 "</div>"
             )
+        followups = _stage_artifact_lanes(debug_graph)
+        if followups:
+            buttons.append(followups)
         return "\n".join(buttons)
     for index, item in enumerate(debug_graph.get("stages", [])):
         active = " active" if item.get("name") == active_name else ""
@@ -890,6 +1023,9 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
             f'{_cell(item.get("name"))}'
             "</button>"
         )
+    followups = _stage_artifact_lanes(debug_graph)
+    if followups:
+        buttons.append(followups)
     return "\n".join(buttons)
 
 
@@ -964,6 +1100,10 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .toolbar { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 0.86rem; }
 .app-shell { display: grid; grid-template-columns: var(--sidebar-width) minmax(28rem, 1fr) var(--resizer-width) var(--inspector-width); gap: 0.55rem; padding: 0.85rem; height: calc(100vh - var(--header-height)); min-height: 0; overflow: hidden; }
 .app-shell.sidebar-collapsed { --sidebar-width: 3.4rem; }
+.app-shell.document-mode { grid-template-columns: var(--sidebar-width) minmax(28rem, 1fr); }
+.app-shell.document-mode .graph-panel { grid-column: 2; }
+.app-shell.document-mode .layout-resizer { display: none; }
+.app-shell.document-mode .inspector-panel { display: none; }
 .sidebar, .graph-panel, .inspector-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 .sidebar { padding: 0.65rem; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 0.45rem; margin-bottom: 0.65rem; }
@@ -996,6 +1136,9 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .stage-child-list { display: grid; gap: 0.24rem; }
 .stage-child-button { margin-left: 0.65rem; padding: 0.34rem 0.45rem; font-size: 0.75rem; }
 .stage-child-title { display: block; color: inherit; font-weight: 700; line-height: 1.15; }
+.stage-followup-lanes { display: grid; gap: 0.45rem; margin-top: 0.45rem; }
+.stage-artifact-parent { cursor: default; }
+.stage-artifact-link { display: block; text-decoration: none; overflow-wrap: anywhere; }
 .stage-phase-controls { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .stage-phase-controls:empty { display: none; }
 .stage-phase-button { border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--text); padding: 0.24rem 0.55rem; cursor: pointer; font-size: 0.76rem; }
@@ -1066,6 +1209,8 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .search-status:empty { display: none; }
 .graph-canvas-wrap { overflow: auto; min-height: 0; height: auto; background: #ffffff; cursor: grab; }
 .graph-canvas-wrap.panning { cursor: grabbing; user-select: none; }
+.graph-canvas-wrap.document-mode { padding: 0; overflow: hidden; cursor: default; }
+.workbench-view-frame { width: 100%; height: 100%; min-height: 70vh; border: 0; background: #ffffff; display: block; }
 #unified-debug-graph-svg { display: block; min-width: 100%; }
 .function-frame-box { fill: #f8fafc; fill-opacity: 0.72; stroke: #475569; stroke-width: 2; stroke-dasharray: 9 5; }
 .function-frame-label-bg { fill: #ffffff; stroke: #94a3b8; stroke-width: 1; }
@@ -1179,6 +1324,8 @@ th { background: #f2f5f9; }
 @media (max-width: 1180px) {
   html, body { overflow: auto; }
   .app-shell { grid-template-columns: 1fr; }
+  .app-shell.document-mode { grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
+  .app-shell.document-mode .graph-panel { grid-column: 2; }
   .sidebar, .inspector-panel { position: static; max-height: none; }
   .layout-resizer { display: none; }
   .panel-header { grid-template-columns: 1fr; }
@@ -1292,9 +1439,56 @@ function truncate(value, limit) {
 function setInspector(title, links = [], detailHtml = "") {
   document.getElementById("inspector-title").textContent = title;
   const actions = document.getElementById("inspector-actions");
-  actions.innerHTML = links.map((link) => `<a class="chip" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`).join("");
+  actions.innerHTML = links.map((link) => {
+    const viewAttrs = link.workbench === false
+      ? ""
+      : ` data-workbench-view-href="${escapeHtml(link.href)}" data-workbench-view-title="${escapeHtml(link.label)}"`;
+    const targetAttrs = link.external ? ' target="_blank" rel="noopener noreferrer"' : "";
+    return `<a class="chip" href="${escapeHtml(link.href)}"${viewAttrs}${targetAttrs}>${escapeHtml(link.label)}</a>`;
+  }).join("");
   document.getElementById("inspector-detail").innerHTML = detailHtml;
+  installWorkbenchViewLinks(actions);
   installSourceExpandActions();
+}
+
+function enterGraphMode() {
+  document.querySelector(".app-shell")?.classList.remove("document-mode");
+  const canvas = document.getElementById("graph-canvas");
+  canvas.classList.remove("document-mode");
+}
+
+function openWorkbenchView(href, title = "文档视图") {
+  if (!href) return;
+  selectedKey = `document:${href}`;
+  document.querySelector(".app-shell")?.classList.add("document-mode");
+  const canvas = document.getElementById("graph-canvas");
+  canvas.classList.add("document-mode");
+  document.getElementById("stage-graph-controls").hidden = true;
+  document.getElementById("graph-title").textContent = title || "文档视图";
+  document.getElementById("graph-subtitle").textContent = href;
+  updateStepExplanation(null);
+  canvas.innerHTML = `<iframe class="workbench-view-frame" src="${escapeHtml(href)}" title="${escapeHtml(title || href)}"></iframe>`;
+  setInspector(
+    `文档视图：${title || href}`,
+    [{label: "独立打开", href, workbench: false, external: true}],
+    detailRows([
+      ["路径", href],
+      ["显示方式", "工作台内嵌视图"],
+    ])
+  );
+}
+
+function installWorkbenchViewLinks(root = document) {
+  root.querySelectorAll("[data-workbench-view-href]").forEach((link) => {
+    if (link.dataset.workbenchViewInstalled === "true") return;
+    link.dataset.workbenchViewInstalled = "true";
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      const href = link.dataset.workbenchViewHref || link.getAttribute("href") || "";
+      const title = link.dataset.workbenchViewTitle || link.textContent || href;
+      openWorkbenchView(href, title);
+    });
+  });
 }
 
 function valueText(value) {
@@ -2859,6 +3053,7 @@ function afterGraphRender() {
 }
 
 function renderStageGraph() {
+  enterGraphMode();
   const stage = activeStage();
   const graph = stage ? stage.graph : null;
   const canvas = document.getElementById("graph-canvas");
@@ -2976,6 +3171,7 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
 }
 
 function renderKernelDag() {
+  enterGraphMode();
   const summary = workspace.kernel_dag || {};
   const nodes = summary.nodes || {};
   const edges = summary.edges || [];
@@ -3088,9 +3284,10 @@ function setMode(mode) {
 }
 
 document.querySelectorAll(".mode-tab").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
-document.querySelectorAll(".stage-button").forEach((button) => button.addEventListener("click", () => {
+document.querySelectorAll(".stage-button[data-stage-index]").forEach((button) => button.addEventListener("click", () => {
   activateStageIndex(button.dataset.stageIndex);
 }));
+installWorkbenchViewLinks();
 restoreInspectorWidth();
 installInspectorResize();
 installSidebarToggle();
@@ -3260,6 +3457,7 @@ def render_debug_graph(
         "stage_connectivity": stage_connectivity,
         "stage_groups": stage_groups,
         "stages": stages,
+        "timeline_lanes": _build_timeline_followup_lanes(run_dir, manifest),
         "schedule_axis_contracts": schedule_axis_contracts,
         "kernel_dag": kernel_summary or {},
         "kernel_detail_views": _kernel_detail_views(stages, kernel_summary),
