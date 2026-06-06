@@ -32,6 +32,8 @@ constexpr llvm::StringLiteral kKernelMetadataTailPlanKey = "tail_plan";
 constexpr llvm::StringLiteral kKernelMetadataTailMarkersKey = "tail_markers";
 constexpr llvm::StringLiteral kKernelMetadataTargetTilePolicyKey =
     "target_tile_policy";
+constexpr llvm::StringLiteral kKernelMetadataStructuredLoweringKey =
+    "structured_lowering";
 
 Operation *getDiagnosticOp(const KernelPatternView &pattern) {
   if (!pattern.primaryOps.empty())
@@ -208,11 +210,69 @@ ArrayAttr buildTailMarkersAttr(MLIRContext *context,
   return builder.getArrayAttr(entries);
 }
 
+DictionaryAttr buildStructuredLoweringAttr(MLIRContext *context,
+                                           const ScheduleDecision &decision) {
+  Builder builder(context);
+  SmallVector<Attribute> loopAxes;
+  loopAxes.reserve(decision.tileParams.size());
+  for (const ScheduleTileParam &param : decision.tileParams) {
+    loopAxes.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("axis",
+                             builder.getI64IntegerAttr(
+                                 static_cast<int64_t>(
+                                     param.logicalAxisId))),
+        builder.getNamedAttr("axis_kind",
+                             builder.getStringAttr(
+                                 stringifyAxisKind(param.axisKind))),
+        builder.getNamedAttr("tile_param",
+                             builder.getStringAttr(param.name)),
+        builder.getNamedAttr(
+            "binding",
+            builder.getStringAttr(
+                stringifyTileParamBinding(param.binding))),
+        builder.getNamedAttr("roles",
+                             buildAxisExecutionRolesAttr(builder,
+                                                         param.roles)),
+        builder.getNamedAttr(
+            "primitive_uses",
+            buildAffectedPrimitiveUsesAttr(builder,
+                                           param.primitiveUses)),
+    }));
+  }
+
+  int64_t guardMarkerCount =
+      static_cast<int64_t>(decision.instance.candidateGuards.size() +
+                           decision.instance.decisionGuards.size());
+  return builder.getDictionaryAttr({
+      builder.getNamedAttr("contract",
+                           builder.getStringAttr(kGenericTiledLoopContract)),
+      builder.getNamedAttr("representation",
+                           builder.getStringAttr(
+                               "symbolic_marker_contract")),
+      builder.getNamedAttr("loop_axes", builder.getArrayAttr(loopAxes)),
+      builder.getNamedAttr("guard_marker_count",
+                           builder.getI64IntegerAttr(guardMarkerCount)),
+      builder.getNamedAttr("tail_marker_count",
+                           builder.getI64IntegerAttr(
+                               static_cast<int64_t>(
+                                   decision.tailPlans.size()))),
+      builder.getNamedAttr("cache_read_marker",
+                           builder.getStringAttr("metadata_deferred")),
+      builder.getNamedAttr("cache_write_marker",
+                           builder.getStringAttr("metadata_deferred")),
+      builder.getNamedAttr("pipeline_marker",
+                           builder.getStringAttr("none")),
+      builder.getNamedAttr("double_buffer_marker",
+                           builder.getStringAttr("none")),
+  });
+}
+
 void setScheduleMetadata(Operation *op, StringAttr tileBinding,
                          ArrayAttr tileParams,
                          ArrayAttr guardMarkers, ArrayAttr tailPolicies,
                          ArrayAttr tailPlan, ArrayAttr tailMarkers,
-                         StringAttr targetTilePolicy) {
+                         StringAttr targetTilePolicy,
+                         DictionaryAttr structuredLowering) {
   op->setAttr(kScheduleTileBindingAttr, tileBinding);
   op->setAttr(kScheduleTileParamsAttr, tileParams);
   op->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
@@ -220,6 +280,7 @@ void setScheduleMetadata(Operation *op, StringAttr tileBinding,
   op->setAttr(kScheduleTailPlanAttr, tailPlan);
   op->setAttr(kScheduleTailMarkersAttr, tailMarkers);
   op->setAttr(kScheduleTargetTilePolicyAttr, targetTilePolicy);
+  op->setAttr(kScheduleStructuredLoweringAttr, structuredLowering);
 }
 
 void clearLegacyFunctionScheduleMetadata(func::FuncOp funcOp) {
@@ -230,6 +291,7 @@ void clearLegacyFunctionScheduleMetadata(func::FuncOp funcOp) {
   funcOp->removeAttr(kScheduleTailPlanAttr);
   funcOp->removeAttr(kScheduleTailMarkersAttr);
   funcOp->removeAttr(kScheduleTargetTilePolicyAttr);
+  funcOp->removeAttr(kScheduleStructuredLoweringAttr);
 }
 
 void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
@@ -239,7 +301,8 @@ void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
                                        ArrayAttr tailPolicies,
                                        ArrayAttr tailPlan,
                                        ArrayAttr tailMarkers,
-                                       StringAttr targetTilePolicy) {
+                                       StringAttr targetTilePolicy,
+                                       DictionaryAttr structuredLowering) {
   funcOp->setAttr(kScheduleTileBindingAttr, tileBinding);
   funcOp->setAttr(kScheduleTileParamsAttr, tileParams);
   funcOp->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
@@ -247,6 +310,7 @@ void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
   funcOp->setAttr(kScheduleTailPlanAttr, tailPlan);
   funcOp->setAttr(kScheduleTailMarkersAttr, tailMarkers);
   funcOp->setAttr(kScheduleTargetTilePolicyAttr, targetTilePolicy);
+  funcOp->setAttr(kScheduleStructuredLoweringAttr, structuredLowering);
 }
 
 DictionaryAttr
@@ -257,7 +321,8 @@ buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
                                  ArrayAttr guardMarkers,
                                  ArrayAttr tailPolicies, ArrayAttr tailPlan,
                                  ArrayAttr tailMarkers,
-                                 StringAttr targetTilePolicy) {
+                                 StringAttr targetTilePolicy,
+                                 DictionaryAttr structuredLowering) {
   return builder.getDictionaryAttr({
       builder.getNamedAttr(kKernelMetadataKernelKey,
                            builder.getStringAttr(kernelId)),
@@ -271,6 +336,8 @@ buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
       builder.getNamedAttr(kKernelMetadataTailMarkersKey, tailMarkers),
       builder.getNamedAttr(kKernelMetadataTargetTilePolicyKey,
                            targetTilePolicy),
+      builder.getNamedAttr(kKernelMetadataStructuredLoweringKey,
+                           structuredLowering),
   });
 }
 
@@ -281,14 +348,17 @@ bool kernelScheduleMetadataEntryMatches(DictionaryAttr entry,
                                         ArrayAttr tailPolicies,
                                         ArrayAttr tailPlan,
                                         ArrayAttr tailMarkers,
-                                        StringAttr targetTilePolicy) {
+                                        StringAttr targetTilePolicy,
+                                        DictionaryAttr structuredLowering) {
   return entry.get(kKernelMetadataTileBindingKey) == tileBinding &&
          entry.get(kKernelMetadataTileParamsKey) == tileParams &&
          entry.get(kKernelMetadataGuardMarkersKey) == guardMarkers &&
          entry.get(kKernelMetadataTailPoliciesKey) == tailPolicies &&
          entry.get(kKernelMetadataTailPlanKey) == tailPlan &&
          entry.get(kKernelMetadataTailMarkersKey) == tailMarkers &&
-         entry.get(kKernelMetadataTargetTilePolicyKey) == targetTilePolicy;
+         entry.get(kKernelMetadataTargetTilePolicyKey) == targetTilePolicy &&
+         entry.get(kKernelMetadataStructuredLoweringKey) ==
+             structuredLowering;
 }
 
 LogicalResult verifyLegacyFunctionScheduleMetadataShape(func::FuncOp funcOp) {
@@ -299,8 +369,11 @@ LogicalResult verifyLegacyFunctionScheduleMetadataShape(func::FuncOp funcOp) {
   bool hasTailPlan = funcOp->hasAttr(kScheduleTailPlanAttr);
   bool hasTailMarkers = funcOp->hasAttr(kScheduleTailMarkersAttr);
   bool hasTargetTilePolicy = funcOp->hasAttr(kScheduleTargetTilePolicyAttr);
+  bool hasStructuredLowering =
+      funcOp->hasAttr(kScheduleStructuredLoweringAttr);
   bool hasAnyMetadata = hasTileBinding || hasTileParams || hasGuardMarkers || hasTailPolicies ||
-                        hasTailPlan || hasTailMarkers || hasTargetTilePolicy;
+                        hasTailPlan || hasTailMarkers || hasTargetTilePolicy ||
+                        hasStructuredLowering;
   bool hasAllCoreMetadata =
       hasTailPolicies && hasTailPlan;
   if (hasAnyMetadata && !hasAllCoreMetadata)
@@ -323,7 +396,8 @@ upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
                              ArrayAttr tileParams,
                              ArrayAttr guardMarkers, ArrayAttr tailPolicies,
                              ArrayAttr tailPlan, ArrayAttr tailMarkers,
-                             StringAttr targetTilePolicy) {
+                             StringAttr targetTilePolicy,
+                             DictionaryAttr structuredLowering) {
   Builder builder(funcOp.getContext());
   SmallVector<Attribute> entries;
   bool foundKernel = false;
@@ -352,7 +426,7 @@ upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
         if (!kernelScheduleMetadataEntryMatches(
                 entry, tileBinding, tileParams, guardMarkers, tailPolicies,
                 tailPlan, tailMarkers,
-                targetTilePolicy))
+                targetTilePolicy, structuredLowering))
           return funcOp.emitError()
                  << "function contains conflicting schedule metadata for "
                     "kernel \""
@@ -365,7 +439,8 @@ upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
   if (!foundKernel)
     entries.push_back(buildKernelScheduleMetadataEntry(
         builder, kernelId, decisionId, tileBinding, tileParams, guardMarkers,
-        tailPolicies, tailPlan, tailMarkers, targetTilePolicy));
+        tailPolicies, tailPlan, tailMarkers, targetTilePolicy,
+        structuredLowering));
 
   return builder.getArrayAttr(entries);
 }
@@ -378,13 +453,15 @@ void reconcileLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
                                              ArrayAttr tailPolicies,
                                              ArrayAttr tailPlan,
                                              ArrayAttr tailMarkers,
-                                             StringAttr targetTilePolicy) {
+                                             StringAttr targetTilePolicy,
+                                             DictionaryAttr structuredLowering) {
   bool allEntriesShareMetadata = true;
   for (Attribute rawEntry : kernelMetadata) {
     auto entry = cast<DictionaryAttr>(rawEntry);
     if (!kernelScheduleMetadataEntryMatches(
             entry, tileBinding, tileParams, guardMarkers, tailPolicies,
-            tailPlan, tailMarkers, targetTilePolicy)) {
+            tailPlan, tailMarkers, targetTilePolicy,
+            structuredLowering)) {
       allEntriesShareMetadata = false;
       break;
     }
@@ -393,7 +470,8 @@ void reconcileLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
   if (allEntriesShareMetadata) {
     setLegacyFunctionScheduleMetadata(funcOp, tileBinding, tileParams,
                                       guardMarkers, tailPolicies, tailPlan,
-                                      tailMarkers, targetTilePolicy);
+                                      tailMarkers, targetTilePolicy,
+                                      structuredLowering);
     return;
   }
 
@@ -407,7 +485,8 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
                                                ArrayAttr tailPolicies,
                                                ArrayAttr tailPlan,
                                                ArrayAttr tailMarkers,
-                                               StringAttr targetTilePolicy) {
+                                               StringAttr targetTilePolicy,
+                                               DictionaryAttr structuredLowering) {
   auto funcOp = op->getParentOfType<func::FuncOp>();
   if (!funcOp)
     return success();
@@ -428,14 +507,15 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
   FailureOr<ArrayAttr> kernelMetadata = upsertKernelScheduleMetadata(
       funcOp, kernelAttr.getValue(), decisionIdAttr.getValue(),
       tileBinding, tileParams, guardMarkers, tailPolicies, tailPlan,
-      tailMarkers, targetTilePolicy);
+      tailMarkers, targetTilePolicy, structuredLowering);
   if (failed(kernelMetadata))
     return failure();
 
   funcOp->setAttr(kScheduleKernelMetadataAttr, *kernelMetadata);
   reconcileLegacyFunctionScheduleMetadata(
       funcOp, *kernelMetadata, tileBinding, tileParams, guardMarkers,
-      tailPolicies, tailPlan, tailMarkers, targetTilePolicy);
+      tailPolicies, tailPlan, tailMarkers, targetTilePolicy,
+      structuredLowering);
   return success();
 }
 
@@ -492,6 +572,8 @@ LogicalResult applyScheduleContractMarkers(
   ArrayAttr tailMarkers = buildTailMarkersAttr(context, selectedDecision);
   StringAttr targetTilePolicy =
       StringAttr::get(context, scheduleProblem.targetTilePolicy.policyId);
+  DictionaryAttr structuredLowering =
+      buildStructuredLoweringAttr(context, selectedDecision);
 
   for (const PatternOpView &opView : pattern.ops) {
     Operation *op = opView.op;
@@ -518,11 +600,11 @@ LogicalResult applyScheduleContractMarkers(
         StringAttr::get(opView.op->getContext(), kGenericTiledLoopContract));
     setScheduleMetadata(opView.op, tileBinding, tileParams, guardMarkers,
                         tailPolicies, tailPlan, tailMarkers,
-                        targetTilePolicy);
+                        targetTilePolicy, structuredLowering);
     if (failed(preserveFunctionScheduleMetadata(
             opView.op, tileBinding, tileParams, guardMarkers, tailPolicies,
             tailPlan, tailMarkers,
-            targetTilePolicy)))
+            targetTilePolicy, structuredLowering)))
       return failure();
     ++report.verifiedOps;
   }

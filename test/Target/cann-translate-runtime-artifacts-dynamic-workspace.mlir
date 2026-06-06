@@ -12,7 +12,9 @@
 // MANIFEST: "workspaceSizeBytes": 0
 
 // HOST: int64_t dynamic_workspace_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count)
-// HOST: return shape_count == 1 && shape_args != nullptr ? shape_args[0] * 128 * 2 : -1;
+// HOST: if (shape_count != 1 || shape_args == nullptr)
+// HOST-NEXT: return -1;
+// HOST: return shape_args[0] * 128 * 2;
 
 module {
   func.func @dynamic_workspace(

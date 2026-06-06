@@ -682,7 +682,7 @@ cat > "${RUNTIME_SESSION_RUN_MANIFEST}" <<EOF
   ],
   "tiling": {
     "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-    "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
+    "params": "T_arg1_dim0=32,T_arg0_dim0=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
   },
   "block_dim": 20,
   "workspace_size": 16777216,
@@ -724,7 +724,7 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
       ],
       "tiling": {
         "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-        "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
+        "params": "T_arg1_dim0=32,T_arg0_dim0=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
       },
       "block_dim": 20,
       "workspace_size": 16777216,
@@ -741,7 +741,7 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
       ],
       "tiling": {
         "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-        "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
+        "params": "T_arg1_dim0=32,T_arg0_dim0=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
       },
       "block_dim": 20,
       "workspace_size": 16777216,
@@ -760,7 +760,7 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
       ],
       "tiling": {
         "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-        "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
+        "params": "T_arg1_dim0=32,T_arg0_dim0=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
       },
       "block_dim": 20,
       "workspace_size": 16777216,

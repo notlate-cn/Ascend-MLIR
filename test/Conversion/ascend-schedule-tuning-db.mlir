@@ -2,6 +2,9 @@
 // RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-out=%t.db' | FileCheck %s --check-prefix=IR
 // RUN: cat %t.db | FileCheck %s --check-prefix=DB
 // RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-in=%t.db dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=CACHE
+// RUN: echo '# ascend.schedule.tuning_db schema=1' > %t.profile.db
+// RUN: echo 'record schema=1 target=Ascend910B2 policy=legacy-default signature=vector_generic|single_tile_per_block|64|64 family=vector_generic template=single_tile_per_block result=64 tile=64 score=1 source=test' >> %t.profile.db
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-in=%t.profile.db dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=PROFILE
 
 func.func @tuning_db_vector(%arg0: tensor<64xf32>,
                             %arg1: tensor<64xf32>,
@@ -32,3 +35,7 @@ func.func @tuning_db_vector(%arg0: tensor<64xf32>,
 // DB-SAME: tile=32
 // CACHE: ScheduleCache:
 // CACHE: persistent_tuning_hits = 1
+// PROFILE: ScheduleSearch:
+// PROFILE: profile_cost = 1
+// PROFILE: ScheduleDecisionSet:
+// PROFILE: tile_params = [name=TB_M axis=0 binding=runtime axis_kind=parallel default=64

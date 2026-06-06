@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringSwitch.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -257,6 +258,7 @@ struct ScheduleInstance {
   ScheduleTemplate tmpl;
   TileShape tileShape;
   int64_t estimatedCost = 0;
+  std::optional<int64_t> profileCost;
   SmallVector<ScheduleGuard> candidateGuards;
   SmallVector<ScheduleGuard> decisionGuards;
   SmallVector<std::string> reasonKinds;
@@ -301,10 +303,16 @@ struct ScheduleDecisionSet {
   unsigned runtimeTopK = 1;
 };
 
+struct ScheduleProfileCostEntry {
+  std::string signature;
+  int64_t cost = 0;
+};
+
 struct ScheduleSearchOptions {
   unsigned compileTimeTopK = 4;
   unsigned runtimeTopK = 1;
   unsigned maxAxisProductTileShapes = 64;
+  SmallVector<ScheduleProfileCostEntry, 8> profileCosts;
 };
 
 struct ShapeBucketKey {

@@ -42,7 +42,7 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // CHECK:   step = "schedule.choose-plan"
 // CHECK:   outputs = "schedule candidates, selected decision, tile_params, tail_plan"
 // CHECK:   step = "schedule.attach-contract"
-// CHECK:   inspect_hint = "Primary ops and func attrs should expose the same decision_id, tile_params, tail_policies, target_tile_policy, and schedule_contract."
+// CHECK:   inspect_hint = "Primary ops and func attrs should expose the same decision_id, tile_params, tail_policies, target_tile_policy, schedule_contract, and structured_lowering."
 // CHECK: ScheduleDecisionSet:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK: ScheduleContract:
@@ -57,18 +57,24 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // CHECK-SAME: scope = "candidate"
 // CHECK-SAME: text = "d0 == 64"
 // CHECK-SAME: ascend.schedule.schedule_contract = "generic_tiled_loop"
+// CHECK-SAME: ascend.schedule.structured_lowering
+// CHECK-SAME: cache_read_marker = "metadata_deferred"
+// CHECK-SAME: double_buffer_marker = "none"
+// CHECK-SAME: loop_axes
+// CHECK-SAME: representation = "symbolic_marker_contract"
 // CHECK-SAME: ascend.schedule.tail_markers
 // CHECK-SAME: ascend.schedule.target_tile_policy = "target_default_32"
 
 // DUMP: // Ascend DebugStep: schedule.attach-contract
 // DUMP: // Purpose: Attach the chosen schedule decision as the downstream symbolic runtime contract.
-// DUMP: // Outputs: decision_id, tile_params, tail_plan, tail_policies, target_tile_policy, schedule_contract
-// CHECK: linalg.generic
-// CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
-// CHECK-SAME: ascend.schedule.guard_markers
-// CHECK-SAME: kind = "shape_static_equal"
-// CHECK-SAME: scope = "candidate"
-// CHECK-SAME: text = "d0 == 64"
-// CHECK-SAME: ascend.schedule.schedule_contract = "generic_tiled_loop"
-// CHECK-SAME: ascend.schedule.tail_markers
-// CHECK-SAME: ascend.schedule.target_tile_policy = "target_default_32"
+// DUMP: // Outputs: decision_id, tile_params, tail_plan, tail_policies, target_tile_policy, schedule_contract, structured_lowering
+// DUMP: linalg.generic
+// DUMP-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// DUMP-SAME: ascend.schedule.guard_markers
+// DUMP-SAME: kind = "shape_static_equal"
+// DUMP-SAME: scope = "candidate"
+// DUMP-SAME: text = "d0 == 64"
+// DUMP-SAME: ascend.schedule.schedule_contract = "generic_tiled_loop"
+// DUMP-SAME: ascend.schedule.structured_lowering
+// DUMP-SAME: ascend.schedule.tail_markers
+// DUMP-SAME: ascend.schedule.target_tile_policy = "target_default_32"

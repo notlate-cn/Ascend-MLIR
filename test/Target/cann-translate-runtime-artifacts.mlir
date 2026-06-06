@@ -108,7 +108,7 @@
 // HOST: data.dim_arg1_1 = shape_args[1];
 // HOST: int64_t broadcast_add_reducesum_GetBlockDim(const int64_t* shape_args, int32_t shape_count)
 // HOST: int64_t broadcast_add_reducesum_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count)
-// HOST: ? 4096 : -1;
+// HOST: return 4096;
 
 // RUNMANIFEST: "backend": "sim"
 // RUNMANIFEST: "block_dim": 20

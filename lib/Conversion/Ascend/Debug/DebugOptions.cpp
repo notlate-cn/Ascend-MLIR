@@ -94,11 +94,12 @@ constexpr DebugStepInfo kScheduleSteps[] = {
      "Attach the chosen schedule decision as the downstream symbolic runtime "
      "contract.",
      "selected schedule decision",
-     "decision_id, tile_params, tail_plan, tail_policies, target_tile_policy, schedule_contract",
+     "decision_id, tile_params, tail_plan, tail_policies, target_tile_policy, schedule_contract, structured_lowering",
      "Primary ops and func attrs should expose the same decision_id, "
-     "tile_params, tail_policies, target_tile_policy, and schedule_contract.",
+     "tile_params, tail_policies, target_tile_policy, schedule_contract, and "
+     "structured_lowering.",
      "Kernel metadata mismatch, missing tile_params, missing schedule_contract, "
-     "or incomplete tail plan."},
+     "missing structured_lowering, or incomplete tail plan."},
 };
 
 constexpr DebugStepInfo kRealizeSteps[] = {

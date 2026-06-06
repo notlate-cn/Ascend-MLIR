@@ -1213,6 +1213,194 @@ buildGuardSet(ArrayRef<DictionaryAttr> metadataEntries) {
   return out;
 }
 
+struct HostScheduleVariantInfo {
+  unsigned index = 0;
+  unsigned order = 0;
+  int64_t priority = 0;
+  bool fallback = false;
+  int64_t blockDim = 20;
+  std::string guardExpr = "true";
+  std::string workspaceExpr = "0";
+  llvm::StringMap<int64_t> tileParamValues;
+};
+
+static FailureOr<std::string>
+buildHostGuardExpr(func::FuncOp funcOp, StringRef expr,
+                   ArrayRef<TilingFieldInfo> fields) {
+  expr = expr.trim();
+  if (expr.empty() || expr == "true")
+    return std::string("true");
+  if (expr == "false")
+    return std::string("false");
+
+  llvm::StringMap<unsigned> shapeFieldAbiPositions;
+  unsigned shapeIndex = 0;
+  for (const TilingFieldInfo &field : fields) {
+    if (!field.isShape)
+      continue;
+    shapeFieldAbiPositions[field.name] = shapeIndex;
+    shapeFieldAbiPositions[field.shapeKey] = shapeIndex;
+    ++shapeIndex;
+  }
+
+  std::string hostExpr;
+  for (size_t i = 0, e = expr.size(); i < e;) {
+    unsigned char ch = static_cast<unsigned char>(expr[i]);
+    if (std::isalpha(ch) || expr[i] == '_') {
+      size_t start = i++;
+      while (i < e) {
+        unsigned char identCh = static_cast<unsigned char>(expr[i]);
+        if (!std::isalnum(identCh) && expr[i] != '_')
+          break;
+        ++i;
+      }
+      StringRef ident = expr.slice(start, i);
+      if (ident == "true" || ident == "false") {
+        hostExpr += ident.str();
+        continue;
+      }
+      auto it = shapeFieldAbiPositions.find(ident);
+      if (it == shapeFieldAbiPositions.end())
+        return funcOp.emitError()
+               << "host tiling guard references unknown shape value \""
+               << ident << "\"";
+      hostExpr += "shape_args[" + std::to_string(it->second) + "]";
+      continue;
+    }
+
+    if (std::isdigit(ch) || std::isspace(ch) || expr[i] == '+' ||
+        expr[i] == '-' || expr[i] == '*' || expr[i] == '/' ||
+        expr[i] == '%' || expr[i] == '(' || expr[i] == ')' ||
+        expr[i] == '<' || expr[i] == '>' || expr[i] == '=' ||
+        expr[i] == '!' || expr[i] == '&' || expr[i] == '|') {
+      hostExpr.push_back(expr[i++]);
+      continue;
+    }
+
+    return funcOp.emitError()
+           << "host tiling guard contains unsupported character '" << expr[i]
+           << "'";
+  }
+
+  return hostExpr;
+}
+
+static LogicalResult
+populateHostTileParamValues(func::FuncOp funcOp, Attribute rawTileParams,
+                            llvm::StringMap<int64_t> &tileParamValues) {
+  if (!rawTileParams)
+    return success();
+  auto tileParams = dyn_cast<ArrayAttr>(rawTileParams);
+  if (!tileParams)
+    return funcOp.emitError()
+           << "host tiling tile_params metadata must be an array attribute";
+
+  for (auto [index, rawEntry] : llvm::enumerate(tileParams)) {
+    auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+    if (!entry)
+      return funcOp.emitError()
+             << "host tiling tile_params element " << index
+             << " must be a dictionary attribute";
+    auto name = dyn_cast_or_null<StringAttr>(entry.get("name"));
+    auto defaultValue = dyn_cast_or_null<IntegerAttr>(entry.get("default"));
+    if (!name || !defaultValue || !defaultValue.getType().isInteger(64))
+      return funcOp.emitError()
+             << "host tiling tile_params element " << index
+             << " must include string 'name' and i64 'default' fields";
+    tileParamValues[name.getValue()] = defaultValue.getInt();
+  }
+  return success();
+}
+
+static FailureOr<SmallVector<HostScheduleVariantInfo>>
+collectHostScheduleVariants(func::FuncOp funcOp,
+                            ArrayRef<TilingFieldInfo> fields,
+                            const llvm::StringMap<TileParamSpaceInfo>
+                                &tileParamInfos,
+                            StringRef defaultWorkspaceExpr) {
+  FailureOr<SmallVector<DictionaryAttr>> metadataEntries =
+      collectKernelScheduleMetadata(funcOp);
+  if (failed(metadataEntries))
+    return failure();
+
+  SmallVector<HostScheduleVariantInfo> variants;
+  auto appendVariant = [&](DictionaryAttr metadata,
+                           unsigned order) -> LogicalResult {
+    HostScheduleVariantInfo variant;
+    variant.index = variants.size();
+    variant.order = order;
+    variant.priority =
+        getI64Metadata(metadata, kKernelMetadataPriorityKey).value_or(order);
+    variant.fallback =
+        getBoolMetadata(metadata, kKernelMetadataFallbackKey).value_or(false);
+    variant.blockDim =
+        getI64Metadata(metadata, kKernelMetadataBlockDimKey).value_or(20);
+
+    FailureOr<std::string> guardExpr = buildHostGuardExpr(
+        funcOp, getStringMetadata(metadata, kKernelMetadataGuardKey)
+                    .value_or("true"),
+        fields);
+    if (failed(guardExpr))
+      return failure();
+    variant.guardExpr = std::move(*guardExpr);
+
+    if (std::optional<std::string> workspaceExpr =
+            getStringMetadata(metadata, kKernelMetadataWorkspaceSizeExprKey)) {
+      bool usesShapeArgs = false;
+      FailureOr<std::string> hostExpr = buildHostWorkspaceSizeExpr(
+          funcOp, *workspaceExpr, fields, usesShapeArgs);
+      if (failed(hostExpr))
+        return failure();
+      variant.workspaceExpr = std::move(*hostExpr);
+    } else if (std::optional<int64_t> workspaceBytes =
+                   getI64Metadata(metadata,
+                                  kKernelMetadataWorkspaceSizeBytesKey)) {
+      variant.workspaceExpr = std::to_string(*workspaceBytes);
+    } else {
+      variant.workspaceExpr = defaultWorkspaceExpr.str();
+    }
+
+    Attribute rawTileParams = getScheduleMetadataAttr(
+        funcOp, metadata, ::mlir::ascend::kScheduleTileParamsAttr,
+        kKernelMetadataTileParamsKey);
+    if (failed(populateHostTileParamValues(funcOp, rawTileParams,
+                                           variant.tileParamValues)))
+      return failure();
+    for (const auto &it : tileParamInfos)
+      if (!variant.tileParamValues.contains(it.getKey()))
+        variant.tileParamValues[it.getKey()] = it.getValue().defaultValue;
+
+    variants.push_back(std::move(variant));
+    return success();
+  };
+
+  if (metadataEntries->empty()) {
+    if (failed(appendVariant(DictionaryAttr(), 0)))
+      return failure();
+  } else {
+    for (auto [order, metadata] : llvm::enumerate(*metadataEntries))
+      if (failed(appendVariant(metadata, order)))
+        return failure();
+  }
+  return variants;
+}
+
+static SmallVector<const HostScheduleVariantInfo *>
+getHostScheduleSelectionOrder(ArrayRef<HostScheduleVariantInfo> variants,
+                              bool fallbackGroup) {
+  SmallVector<const HostScheduleVariantInfo *> ordered;
+  for (const HostScheduleVariantInfo &variant : variants)
+    if (variant.fallback == fallbackGroup)
+      ordered.push_back(&variant);
+  llvm::stable_sort(ordered, [](const HostScheduleVariantInfo *lhs,
+                                const HostScheduleVariantInfo *rhs) {
+    if (lhs->priority != rhs->priority)
+      return lhs->priority < rhs->priority;
+    return lhs->order < rhs->order;
+  });
+  return ordered;
+}
+
 static std::string combineShapeBucketKeys(ArrayRef<std::string> keys) {
   if (keys.empty())
     return "static";
@@ -1802,6 +1990,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     SmallVector<TilingFieldInfo> fields;
     SmallVector<unsigned> shapeFieldPositions;
     llvm::StringMap<TileParamSpaceInfo> tileParamInfos;
+    SmallVector<HostScheduleVariantInfo> scheduleVariants;
     std::string hostWorkspaceExpr;
     bool workspaceExprUsesShapeArgs = false;
     std::string structName;
@@ -1854,6 +2043,12 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     if (failed(hostWorkspaceExpr))
       return failure();
     info.hostWorkspaceExpr = std::move(*hostWorkspaceExpr);
+    FailureOr<SmallVector<HostScheduleVariantInfo>> scheduleVariants =
+        collectHostScheduleVariants(kernel, info.fields, info.tileParamInfos,
+                                    info.hostWorkspaceExpr);
+    if (failed(scheduleVariants))
+      return failure();
+    info.scheduleVariants = std::move(*scheduleVariants);
 
     std::string baseStructName =
         sanitizeCppIdentifier(info.tilingType.getNameAttr().getValue());
@@ -1884,6 +2079,28 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
       os << "};\n\n";
     }
 
+    for (const HostTilingKernelInfo &info : infos) {
+      func::FuncOp funcOp = info.funcOp;
+      StringRef kernelName = funcOp.getName();
+      os << "static int32_t " << kernelName
+         << "_SelectScheduleEntry(const int64_t* shape_args) {\n";
+      os << "  (void)shape_args;\n";
+      for (const HostScheduleVariantInfo *variant :
+           getHostScheduleSelectionOrder(info.scheduleVariants,
+                                         /*fallbackGroup=*/false)) {
+        os << "  if (" << variant->guardExpr << ")\n";
+        os << "    return " << variant->index << ";\n";
+      }
+      for (const HostScheduleVariantInfo *variant :
+           getHostScheduleSelectionOrder(info.scheduleVariants,
+                                         /*fallbackGroup=*/true)) {
+        os << "  if (" << variant->guardExpr << ")\n";
+        os << "    return " << variant->index << ";\n";
+      }
+      os << "  return -1;\n";
+      os << "}\n\n";
+    }
+
     os << "extern \"C\" {\n\n";
     for (const HostTilingKernelInfo &info : infos) {
       func::FuncOp funcOp = info.funcOp;
@@ -1904,22 +2121,35 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
       os << ")\n";
       os << "    return 1;\n";
       os << "  " << info.structName << " data{};\n";
+      os << "  int32_t schedule_index = " << kernelName
+         << "_SelectScheduleEntry(shape_args);\n";
+      os << "  if (schedule_index < 0)\n";
+      os << "    return 2;\n";
       unsigned shapeIndex = 0;
       for (auto [index, nameAttr] : llvm::enumerate(names)) {
         StringRef name = cast<StringAttr>(nameAttr).getValue();
-        os << "  data." << name << " = ";
         if (isShapeField(name)) {
+          os << "  data." << name << " = ";
           os << "shape_args[" << shapeIndex++ << "]";
-        } else if (auto tileParamIt = info.tileParamInfos.find(name);
-                   tileParamIt != info.tileParamInfos.end()) {
-          int64_t fallbackValue = tileParamIt->second.defaultValue;
-          if (ShapedType::isDynamic(fallbackValue) || fallbackValue <= 0)
-            fallbackValue = 1;
-          os << fallbackValue;
-        } else {
-          os << "0";
+          os << ";\n";
+          continue;
         }
-        os << ";\n";
+        os << "  switch (schedule_index) {\n";
+        for (const HostScheduleVariantInfo &variant :
+             info.scheduleVariants) {
+          int64_t value = 0;
+          auto tileParamIt = variant.tileParamValues.find(name);
+          if (tileParamIt != variant.tileParamValues.end())
+            value = tileParamIt->second;
+          if (ShapedType::isDynamic(value) || value <= 0)
+            value = 1;
+          os << "  case " << variant.index << ":\n";
+          os << "    data." << name << " = " << value << ";\n";
+          os << "    break;\n";
+        }
+        os << "  default:\n";
+        os << "    return 3;\n";
+        os << "  }\n";
       }
       os << "  std::memcpy(tiling_out, &data, sizeof(" << info.structName
          << "));\n";
@@ -1928,19 +2158,38 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
 
       os << "int64_t " << kernelName
          << "_GetBlockDim(const int64_t* shape_args, int32_t shape_count) {\n";
-      os << "  (void)shape_args;\n";
-      os << "  return shape_count == " << info.shapeFieldPositions.size()
-         << " ? 20 : -1;\n";
+      os << "  if (shape_count != " << info.shapeFieldPositions.size();
+      if (!info.shapeFieldPositions.empty())
+        os << " || shape_args == nullptr";
+      os << ")\n";
+      os << "    return -1;\n";
+      os << "  switch (" << kernelName
+         << "_SelectScheduleEntry(shape_args)) {\n";
+      for (const HostScheduleVariantInfo &variant : info.scheduleVariants) {
+        os << "  case " << variant.index << ":\n";
+        os << "    return " << variant.blockDim << ";\n";
+      }
+      os << "  default:\n";
+      os << "    return -1;\n";
+      os << "  }\n";
       os << "}\n\n";
 
       os << "int64_t " << kernelName
          << "_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count) {\n";
-      if (!info.workspaceExprUsesShapeArgs)
-        os << "  (void)shape_args;\n";
-      os << "  return shape_count == " << info.shapeFieldPositions.size();
-      if (info.workspaceExprUsesShapeArgs)
-        os << " && shape_args != nullptr";
-      os << " ? " << info.hostWorkspaceExpr << " : -1;\n";
+      os << "  if (shape_count != " << info.shapeFieldPositions.size();
+      if (!info.shapeFieldPositions.empty())
+        os << " || shape_args == nullptr";
+      os << ")\n";
+      os << "    return -1;\n";
+      os << "  switch (" << kernelName
+         << "_SelectScheduleEntry(shape_args)) {\n";
+      for (const HostScheduleVariantInfo &variant : info.scheduleVariants) {
+        os << "  case " << variant.index << ":\n";
+        os << "    return " << variant.workspaceExpr << ";\n";
+      }
+      os << "  default:\n";
+      os << "    return -1;\n";
+      os << "  }\n";
       os << "}\n\n";
     }
     os << "} // extern \"C\"\n";

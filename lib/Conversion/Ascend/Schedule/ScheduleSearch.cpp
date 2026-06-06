@@ -6,6 +6,8 @@
 
 #include "ScheduleSearch.h"
 
+#include "ScheduleCache.h"
+
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -96,6 +98,13 @@ int64_t estimateScheduleCost(const ScheduleInstance &instance) {
 
 bool isLowerRankedInstance(const ScheduleInstance &lhs,
                            const ScheduleInstance &rhs) {
+  if (lhs.profileCost && rhs.profileCost &&
+      *lhs.profileCost != *rhs.profileCost)
+    return *lhs.profileCost < *rhs.profileCost;
+  if (static_cast<bool>(lhs.profileCost) !=
+      static_cast<bool>(rhs.profileCost))
+    return static_cast<bool>(lhs.profileCost);
+
   if (lhs.estimatedCost != rhs.estimatedCost)
     return lhs.estimatedCost < rhs.estimatedCost;
 
@@ -410,6 +419,35 @@ ScheduleInstance makeInstance(const ScheduleProblem &problem,
   return instance;
 }
 
+std::string getInstanceTuningSignature(const ScheduleProblem &problem,
+                                       const ScheduleInstance &instance) {
+  return (llvm::Twine(instance.tmpl.family) + "|" + instance.tmpl.name + "|" +
+          serializeScheduleDims(problem.resultShape) + "|" +
+          serializeScheduleDims(instance.tileShape.tileSizes))
+      .str();
+}
+
+std::optional<int64_t>
+lookupProfileCost(const ScheduleSearchOptions &options, StringRef signature) {
+  for (const ScheduleProfileCostEntry &entry : options.profileCosts)
+    if (entry.signature == signature)
+      return entry.cost;
+  return std::nullopt;
+}
+
+void applyProfileCost(const ScheduleProblem &problem,
+                      const ScheduleSearchOptions &options,
+                      ScheduleInstance &instance) {
+  std::optional<int64_t> profileCost =
+      lookupProfileCost(options, getInstanceTuningSignature(problem, instance));
+  if (!profileCost)
+    return;
+  instance.profileCost = *profileCost;
+  instance.estimatedCost = *profileCost;
+  if (!hasReasonKind(instance, "profile_tuning_cost"))
+    instance.reasonKinds.push_back("profile_tuning_cost");
+}
+
 void assignInstanceIds(StringRef kernelId,
                        SmallVectorImpl<ScheduleInstance> &instances) {
   for (auto [index, instance] : llvm::enumerate(instances)) {
@@ -434,6 +472,7 @@ ScheduleSearchResult searchScheduleInstancesWithStats(
       ++result.generatedCount;
       ScheduleInstance instance = makeInstance(
           problem, implementation->metadata(), std::move(tileShape));
+      applyProfileCost(problem, options, instance);
       if (getGuardCount(instance) > problem.guardBudget) {
         ++result.prunedByGuardBudget;
         continue;
@@ -471,6 +510,10 @@ void printScheduleSearchReport(StringRef kernelId, unsigned generatedCount,
   os << "  compile_time_top_k = " << options.compileTimeTopK << "\n";
   for (const ScheduleInstance &instance : keptInstances)
     os << "  instance = " << instance.instanceId << "\n";
+  for (const ScheduleInstance &instance : keptInstances)
+    if (instance.profileCost)
+      os << "  profile_cost = " << *instance.profileCost
+         << " instance=" << instance.instanceId << "\n";
 }
 
 void printGuardTexts(const ScheduleInstance &instance, llvm::raw_ostream &os) {

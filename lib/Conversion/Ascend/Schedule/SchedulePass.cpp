@@ -103,6 +103,7 @@ static void clearOwnedScheduleAttrs(Operation *op) {
   op->removeAttr(kScheduleTailPlanAttr);
   op->removeAttr(kScheduleTailMarkersAttr);
   op->removeAttr(kScheduleTargetTilePolicyAttr);
+  op->removeAttr(::mlir::ascend::kScheduleStructuredLoweringAttr);
   op->removeAttr(kScheduleKernelMetadataAttr);
 }
 
@@ -474,6 +475,10 @@ struct AscendSchedulePass
           collectMatchingTuningSignatures(tuningDb, tuningTarget,
                                           tuningPolicy);
       seededSignatures.append(dbSignatures.begin(), dbSignatures.end());
+      SmallVector<ScheduleProfileCostEntry, 8> profileCosts =
+          collectMatchingProfileCosts(tuningDb, tuningTarget, tuningPolicy);
+      searchOptions.profileCosts.append(profileCosts.begin(),
+                                        profileCosts.end());
     }
     scheduleCacheModel.seedPersistentTuningSignatures(seededSignatures);
     std::vector<ScheduleDebugEntry> scheduleDebugEntries;

@@ -11,6 +11,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -223,6 +224,28 @@ collectMatchingTuningSignatures(const ScheduleTuningDatabase &db,
       signatures.push_back(record.signature);
   }
   return signatures;
+}
+
+SmallVector<ScheduleProfileCostEntry, 8>
+collectMatchingProfileCosts(const ScheduleTuningDatabase &db,
+                            StringRef target, StringRef policy) {
+  SmallVector<ScheduleProfileCostEntry, 8> costs;
+  llvm::StringSet<> seenSignatures;
+  for (const ScheduleTuningRecord &record : db.records) {
+    if (record.target != target || record.policy != policy)
+      continue;
+    std::optional<int64_t> cost = record.score ? record.score
+                                               : record.cycleCount;
+    if (!cost)
+      continue;
+    if (!seenSignatures.insert(record.signature).second)
+      continue;
+    ScheduleProfileCostEntry entry;
+    entry.signature = record.signature;
+    entry.cost = *cost;
+    costs.push_back(std::move(entry));
+  }
+  return costs;
 }
 
 LogicalResult appendTuningResultRecords(ScheduleTuningDatabase &db,

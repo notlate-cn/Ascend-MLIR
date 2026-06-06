@@ -59,6 +59,10 @@ collectMatchingTuningSignatures(const ScheduleTuningDatabase &db,
                                 llvm::StringRef target,
                                 llvm::StringRef policy);
 
+SmallVector<ScheduleProfileCostEntry, 8>
+collectMatchingProfileCosts(const ScheduleTuningDatabase &db,
+                            llvm::StringRef target, llvm::StringRef policy);
+
 LogicalResult appendTuningResultRecords(ScheduleTuningDatabase &db,
                                         llvm::StringRef target,
                                         llvm::StringRef policy,

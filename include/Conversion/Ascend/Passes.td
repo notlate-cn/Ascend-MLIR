@@ -150,12 +150,11 @@ def AscendKernelSplitPass : Pass<"ascend-kernel-split", "mlir::ModuleOp"> {
 def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
   let summary = "Construct Ascend MLIR memory realization plans";
   let description = [{
-    Pass for the Ascend Realize stage. The default mode preserves IR unchanged,
-    validates that schedule contract attributes are present, and emits
-    an optional debug report with GM-only plan objects. The opt-in
-    one-shot-bufferize materialization mode runs upstream One-Shot Bufferize.
-    The opt-in memory-space-annotate mode runs One-Shot Bufferize first and
-    annotates proven local vector temporaries with on-chip memory spaces.
+    Pass for the Ascend Realize stage. The default memory-space-annotate mode
+    validates that schedule contract attributes are present, runs upstream
+    One-Shot Bufferize, and annotates proven local vector temporaries with
+    on-chip memory spaces. The explicit plan-only materialization mode preserves
+    IR unchanged and emits GM-only plan objects for diagnostics.
   }];
   let dependentDialects = [
     "mlir::bufferization::BufferizationDialect",
@@ -177,7 +176,7 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
            /*default=*/"\"gm-default\"",
            "Realize placement mode: gm-default or target-aware">,
     Option<"materializationMode", "materialization-mode", "std::string",
-           /*default=*/"\"plan-only\"",
+           /*default=*/"\"memory-space-annotate\"",
            "Realize materialization mode: plan-only, one-shot-bufferize, or memory-space-annotate">,
     Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
            "CANN SoC version for target-aware placement">,
