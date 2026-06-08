@@ -186,6 +186,54 @@ module {
   EXPECT_TRUE(isSupportedBackendFinalOutput(generic, matrix));
 }
 
+TEST(AscendLinalgBodyClassifierTest,
+     ClassifiesFusedElementwiseReductionBody) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xf32>, %bias: memref<8xf32>,
+               %weight: memref<4x8xf32>, %out: memref<4xf32>) {
+    %cst_sqrt2 = arith.constant 1.41421354 : f32
+    %cst_one = arith.constant 1.0 : f32
+    %cst_half = arith.constant 0.5 : f32
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0)>],
+      iterator_types = ["parallel", "reduction"]}
+      ins(%arg0, %bias, %weight : memref<4x8xf32>, memref<8xf32>,
+                                  memref<4x8xf32>)
+      outs(%out : memref<4xf32>) {
+    ^bb0(%value: f32, %bias_value: f32, %weight_value: f32, %acc: f32):
+      %biased = arith.addf %value, %bias_value : f32
+      %scaled = arith.divf %biased, %cst_sqrt2 : f32
+      %erf = math.erf %scaled : f32
+      %plus = arith.addf %erf, %cst_one : f32
+      %half = arith.mulf %plus, %cst_half : f32
+      %gelu = arith.mulf %biased, %half : f32
+      %weighted = arith.mulf %gelu, %weight_value : f32
+      %next = arith.addf %acc, %weighted : f32
+      linalg.yield %next : f32
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::GenericOp generic = findFirstGeneric(*module);
+  ASSERT_TRUE(generic);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
+            ComputeKind::ReductionAdd);
+  EXPECT_EQ(classifyBackendReductionBody(generic, matrix),
+            ComputeKind::ReductionAdd);
+  EXPECT_TRUE(isSupportedBackendFinalOutput(generic, matrix));
+}
+
 TEST(AscendLinalgBodyClassifierTest, ClassifiesSupportedGatherBodyOnce) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseClassifierModule(

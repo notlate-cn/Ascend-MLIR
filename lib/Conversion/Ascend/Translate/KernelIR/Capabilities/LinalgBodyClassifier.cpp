@@ -10,7 +10,9 @@
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace mlir;
@@ -275,6 +277,41 @@ bool isSupportedVectorGatherBody(linalg::GenericOp generic,
          yieldOp.getOperand(0) == previousResult;
 }
 
+ComputeKind classifyReductionCombinerOp(Operation *op) {
+  if (isa<arith::AddFOp>(op))
+    return ComputeKind::ReductionAdd;
+  if (isa<arith::MaximumFOp>(op))
+    return ComputeKind::ReductionMax;
+  if (isa<arith::MinimumFOp>(op))
+    return ComputeKind::ReductionMin;
+  if (isa<arith::MulFOp>(op))
+    return ComputeKind::ReductionMul;
+  return ComputeKind::Unknown;
+}
+
+bool isAvailableReductionOperand(Value value,
+                                 const llvm::DenseSet<Value> &available) {
+  if (available.contains(value))
+    return true;
+  return value.getDefiningOp<arith::ConstantOp>();
+}
+
+bool valueDependsOn(Value value, Value target, Block *body,
+                    llvm::SmallPtrSetImpl<Operation *> &visited) {
+  if (value == target)
+    return true;
+
+  Operation *def = value.getDefiningOp();
+  if (!def || def->getBlock() != body)
+    return false;
+  if (!visited.insert(def).second)
+    return false;
+
+  return llvm::any_of(def->getOperands(), [&](Value operand) {
+    return valueDependsOn(operand, target, body, visited);
+  });
+}
+
 bool isSupportedTransposeOp(linalg::TransposeOp transpose,
                             const AscendBackendSupportMatrix &matrix) {
   bool hasOnChip = hasOnChipOutput(transpose);
@@ -352,41 +389,62 @@ ComputeKind classifyBackendReductionBody(
   if (!llvm::is_contained(generic.getIteratorTypesArray(),
                           utils::IteratorType::reduction))
     return ComputeKind::Unknown;
+  if (generic.getNumDpsInits() != 1)
+    return ComputeKind::Unknown;
 
   Block *body = generic.getBody();
   auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
   if (!yieldOp || yieldOp.getNumOperands() != 1)
     return ComputeKind::Unknown;
 
-  // Find all non-constant compute ops; all must be the same homogeneous kind
-  // and the yield must use the last op's result. Multiple ops of the same kind
-  // are allowed (e.g. two arith.addf for a pre-accumulation + reduce pattern).
-  Operation *lastOp = nullptr;
-  Operation *kindOp = nullptr; // first op, used for kind determination
-  for (Operation &bodyOp : body->without_terminator()) {
-    if (isa<arith::ConstantOp>(bodyOp))
-      continue;
-    if (kindOp && bodyOp.getName() != kindOp->getName())
-      return ComputeKind::Unknown; // mixed op kinds in body
-    if (!kindOp)
-      kindOp = &bodyOp;
-    lastOp = &bodyOp;
-  }
-  if (!lastOp)
-    return ComputeKind::Unknown;
-  if (yieldOp.getOperand(0) != lastOp->getResult(0))
+  Operation *yieldProducer = yieldOp.getOperand(0).getDefiningOp();
+  if (!yieldProducer || yieldProducer->getBlock() != body)
     return ComputeKind::Unknown;
 
-  ComputeKind kind = ComputeKind::Unknown;
-  if (isa<arith::AddFOp>(kindOp))      kind = ComputeKind::ReductionAdd;
-  if (isa<arith::MaximumFOp>(kindOp))  kind = ComputeKind::ReductionMax;
-  if (isa<arith::MinimumFOp>(kindOp))  kind = ComputeKind::ReductionMin;
-  if (isa<arith::MulFOp>(kindOp))      kind = ComputeKind::ReductionMul;
-  if (kind == ComputeKind::Unknown || !matrix.isSupportedComputeKind(kind) ||
-      !hasSupportedDtypes(cast<linalg::LinalgOp>(generic.getOperation()), kind,
-                          matrix))
+  ComputeKind reductionKind = classifyReductionCombinerOp(yieldProducer);
+  if (reductionKind == ComputeKind::Unknown ||
+      !matrix.isSupportedComputeKind(reductionKind) ||
+      !hasSupportedDtypes(cast<linalg::LinalgOp>(generic.getOperation()),
+                          reductionKind, matrix))
     return ComputeKind::Unknown;
-  return kind;
+
+  llvm::DenseSet<Value> available;
+  for (Value argument : body->getArguments())
+    available.insert(argument);
+
+  for (Operation &bodyOp : body->without_terminator()) {
+    if (isa<arith::ConstantOp>(bodyOp)) {
+      for (Value result : bodyOp.getResults())
+        available.insert(result);
+      continue;
+    }
+
+    const ElementwiseBodyOpEntry *entry =
+        lookupElementwiseBodyOp(bodyOp.getName().getStringRef());
+    if (!entry || bodyOp.getNumResults() != 1)
+      return ComputeKind::Unknown;
+    if ((entry->unaryEmitter && bodyOp.getNumOperands() != 1) ||
+        (entry->binaryEmitter && bodyOp.getNumOperands() != 2) ||
+        (!entry->unaryEmitter && !entry->binaryEmitter))
+      return ComputeKind::Unknown;
+    if (!matrix.isSupportedComputeKind(entry->kind) ||
+        !hasSupportedDtypes(cast<linalg::LinalgOp>(generic.getOperation()),
+                            entry->kind, matrix))
+      return ComputeKind::Unknown;
+    if (!llvm::all_of(bodyOp.getOperands(), [&](Value operand) {
+          return isAvailableReductionOperand(operand, available);
+        }))
+      return ComputeKind::Unknown;
+
+    available.insert(bodyOp.getResult(0));
+  }
+
+  Value accArg = body->getArgument(generic.getNumDpsInputs());
+  llvm::SmallPtrSet<Operation *, 8> visited;
+  if (!valueDependsOn(yieldOp.getOperand(0), accArg, body, visited))
+    return ComputeKind::Unknown;
+
+  return reductionKind;
 }
 
 ComputeKind

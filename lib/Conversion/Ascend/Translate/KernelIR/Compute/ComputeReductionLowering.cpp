@@ -135,28 +135,62 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
     // The result is a SmallVector of VECCALC local_tensors, one per input.
     // ------------------------------------------------------------------
 
-    // Compute the parallel and reduction dim sizes from the output memref
-    // and the 2D input (if present).  We derive the full [M, N] iteration
-    // shape from the first "full" input (rank == iterRank).
+    // Compute iterator dim sizes from all operand indexing maps. Projected
+    // reductions such as (d0,d1,d2,d3)->(d0,d1,d3) do not have a full-rank
+    // input, so deriving shape from only one operand leaves reduction dims
+    // unset.
     SmallVector<Value> iterDimSizes(iterRank);
+    auto bindIterDimsFromOperand = [&](Value operand,
+                                       AffineMap map) -> LogicalResult {
+      auto memrefType = dyn_cast<MemRefType>(operand.getType());
+      if (!memrefType)
+        return failure();
+
+      for (auto indexedExpr : llvm::enumerate(map.getResults())) {
+        unsigned operandDim = indexedExpr.index();
+        AffineExpr expr = indexedExpr.value();
+        if (isa<AffineConstantExpr>(expr))
+          continue;
+        auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+        if (!dimExpr)
+          return failure();
+
+        unsigned iterDim = dimExpr.getPosition();
+        if (iterDim >= iterRank ||
+            operandDim >= static_cast<unsigned>(memrefType.getRank()))
+          return failure();
+        if (!iterDimSizes[iterDim])
+          iterDimSizes[iterDim] =
+              getDynDim(lowering, builder, loc, operand, operandDim);
+      }
+      return success();
+    };
+
     for (unsigned i = 0; i < numInputs; ++i) {
       Value inMemref = genOp.getDpsInputOperand(i)->get();
-      AffineMap inMap = maps[i];
-      if (inMap.getNumResults() == iterRank) {
-        // Full map — use this operand to fill iterDimSizes.
-        for (unsigned d = 0; d < iterRank; ++d)
-          iterDimSizes[d] = getDynDim(lowering, builder, loc, inMemref, d);
-        break;
+      if (failed(bindIterDimsFromOperand(inMemref, maps[i]))) {
+        genOp.emitError("failed to infer reduction iterator dimensions from "
+                        "input indexing map");
+        return failure();
       }
     }
-    // Fall back: fill remaining parallel dims from output (output only covers
-    // parallel dims, so only use it when the iterator type is parallel).
-    {
-      unsigned outDim = 0;
-      for (unsigned d = 0; d < iterRank; ++d) {
-        if (!iterDimSizes[d] && iterTypes[d] == utils::IteratorType::parallel)
-          iterDimSizes[d] = getDynDim(lowering, builder, loc, outMemref, outDim++);
+
+    unsigned firstOutputMap = numInputs;
+    for (unsigned i = 0, e = genOp.getNumDpsInits(); i < e; ++i) {
+      Value initMemref = genOp.getDpsInitOperand(i)->get();
+      if (failed(bindIterDimsFromOperand(initMemref, maps[firstOutputMap + i]))) {
+        genOp.emitError("failed to infer reduction iterator dimensions from "
+                        "output indexing map");
+        return failure();
       }
+    }
+
+    for (unsigned d = 0; d < iterRank; ++d) {
+      if (iterDimSizes[d])
+        continue;
+      genOp.emitError("failed to infer reduction iterator dimension ")
+          << d;
+      return failure();
     }
 
     // Collect parallel and reduction dim sizes.
