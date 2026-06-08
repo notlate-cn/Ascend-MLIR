@@ -72,8 +72,6 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
     auto maps          = genOp.getIndexingMapsArray();
     Value outMemref    = genOp.getDpsInitOperand(0)->get();
     int64_t outMs      = getMemorySpace(outMemref.getType());
-    if (outMs <= 0)
-      continue; // output must be on-chip
 
     Location loc = genOp.getLoc();
     builder.setInsertionPoint(genOp);
@@ -424,7 +422,13 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
     // For a 2D iteration [parallel_dim, reduction_dim] with AR layout:
     //   reduce_sum_2d_l2(vecoutLt, accumLt, AR, no_tmp)
     // ------------------------------------------------------------------
-    Value vecoutLt = lowering.writeTensor(builder, loc, outMemref);
+    Value outputElemCount = lowering.computeProduct(builder, loc, parallelDims);
+    Value vecoutLt;
+    if (outMs == 0) {
+      vecoutLt = allocVeccalc(lowering, builder, loc, elemType, parallelDims).second;
+    } else {
+      vecoutLt = lowering.writeTensor(builder, loc, outMemref);
+    }
     auto layoutAttr = ReduceLayoutAttr::get(lowering.mlirCtx, ReduceLayout::AR);
     if (reductionKind == ascend::backend::ComputeKind::ReductionMax) {
       auto reduceOp = builder.create<ReduceMax2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
@@ -444,9 +448,20 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
       lowering.copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
     }
 
-    // Enqueue vecout if it has a queue (VECOUT path).
-    if (Value q = lowering.ctx.getQueue(outMemref))
+    if (outMs == 0) {
+      builder.create<PipeBarrierOp>(
+          loc, PipeAttr::get(lowering.mlirCtx, Pipe::PIPE_ALL));
+      Value dstGt =
+          builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, outMemref,
+                                                     /*size=*/Value{});
+      auto copyOp =
+          builder.create<DataCopyL2Op>(loc, dstGt, vecoutLt, outputElemCount);
+      lowering.copyAscendCUnitAttr(genOp.getOperation(), copyOp.getOperation());
+    } else if (Value q = lowering.ctx.getQueue(outMemref)) {
+      // Enqueue vecout if it has a queue (VECOUT path).
       builder.create<TQueBindEnqueTensorOp>(loc, q, vecoutLt);
+    }
 
     genOp.erase();
   }

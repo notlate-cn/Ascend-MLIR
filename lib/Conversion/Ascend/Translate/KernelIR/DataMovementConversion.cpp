@@ -653,12 +653,14 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       continue;
     }
 
-    // CO1(7) → VECIN(9): deque → alloc → data_copy_co12dst → enque → free
-    if (srcMs == 7 && dstMs == 9) {
+    // CO1(7) → VECIN(9)/VECOUT(10): deque → alloc → data_copy_co12dst
+    // → enque → free. VECIN feeds following vector ops; VECOUT feeds final
+    // GM writeback.
+    if (srcMs == 7 && (dstMs == 9 || dstMs == 10)) {
       Value srcQueue = ctx.getQueue(src);
       Value dstQueue = ctx.getQueue(dst);
       if (!srcQueue || !dstQueue) {
-        copyOp.emitError("missing queue for CO1/VECIN buffer");
+        copyOp.emitError("missing queue for CO1/vector dst buffer");
         return failure();
       }
       Type elemType = cast<MemRefType>(src.getType()).getElementType();

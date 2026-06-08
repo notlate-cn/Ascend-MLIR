@@ -177,6 +177,7 @@ struct TranslateCubeBridge {
   OpOperand *initOperand;
   Value originalOutput;
   SmallVector<OpOperand *, 4> vectorInputUses;
+  bool bridgeFinalOutput = false;
   std::string kernelId;
 };
 
@@ -463,14 +464,19 @@ DefaultTranslateMemoryBridge::materialize(ModuleOp module) const {
 
     Value originalOutput = linalgOp.getDpsInitOperand(0)->get();
     SmallVector<OpOperand *, 4> vectorInputUses;
-    if (!collectSafeCubeVectorUses(linalgOp, vectorInputUses, matrix,
-                                   dominance))
+    bool hasVectorInputUses =
+        collectSafeCubeVectorUses(linalgOp, vectorInputUses, matrix, dominance);
+    bool bridgeFinalOutput =
+        !hasVectorInputUses &&
+        isFinalKernelOutput(originalOutput, linalgOp.getOperation(), matrix);
+    if (!hasVectorInputUses && !bridgeFinalOutput)
       return;
 
     cubeBridges.push_back({linalgOp, linalgOp.getDpsInputOperand(0)->get(),
                            linalgOp.getDpsInputOperand(1)->get(),
                            linalgOp.getDpsInitOperand(0), originalOutput,
-                           std::move(vectorInputUses), kernelId.str()});
+                           std::move(vectorInputUses), bridgeFinalOutput,
+                           kernelId.str()});
   });
 
   SmallVector<TranslateBridgeOutput, 4> outputsToBridge;
@@ -542,15 +548,25 @@ DefaultTranslateMemoryBridge::materialize(ModuleOp module) const {
     item.initOperand->set(co1.getResult());
 
     rewriter.setInsertionPointAfter(linalgOp);
-    memref::AllocOp vecIn = createMemorySpaceAllocLike(
-        rewriter, loc, co1.getResult(), vecInSpace);
-    rewriter.create<memref::CopyOp>(loc, co1.getResult(),
-                                    vecIn.getResult());
-    for (OpOperand *use : item.vectorInputUses)
-      use->set(vecIn.getResult());
-
-    counts[item.kernelId].materializedAllocCount += 6;
-    counts[item.kernelId].materializedCopyCount += 5;
+    if (item.bridgeFinalOutput) {
+      memref::AllocOp vecOut = createMemorySpaceAllocLike(
+          rewriter, loc, co1.getResult(), vecOutSpace);
+      rewriter.create<memref::CopyOp>(loc, co1.getResult(),
+                                      vecOut.getResult());
+      rewriter.create<memref::CopyOp>(loc, vecOut.getResult(),
+                                      item.originalOutput);
+      counts[item.kernelId].materializedAllocCount += 6;
+      counts[item.kernelId].materializedCopyCount += 6;
+    } else {
+      memref::AllocOp vecIn = createMemorySpaceAllocLike(
+          rewriter, loc, co1.getResult(), vecInSpace);
+      rewriter.create<memref::CopyOp>(loc, co1.getResult(),
+                                      vecIn.getResult());
+      for (OpOperand *use : item.vectorInputUses)
+        use->set(vecIn.getResult());
+      counts[item.kernelId].materializedAllocCount += 6;
+      counts[item.kernelId].materializedCopyCount += 5;
+    }
   }
 
   for (TranslateBridgeOutput &item : outputsToBridge) {

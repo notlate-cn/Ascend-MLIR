@@ -38,6 +38,14 @@ public:
   }
 };
 
+class GmCopyLoweringStage final : public ComputeLoweringStage {
+public:
+  StringRef getName() const override { return "gm_copy"; }
+  LogicalResult run(ComputeLoweringContext &lowering) const override {
+    return lowerGmCopyComputes(lowering);
+  }
+};
+
 class ReductionLoweringStage final : public ComputeLoweringStage {
 public:
   StringRef getName() const override { return "reduction"; }
@@ -88,6 +96,7 @@ public:
 
 ArrayRef<const ComputeLoweringStage *> getComputeLoweringStages() {
   static const TransposeLoweringStage transpose;
+  static const GmCopyLoweringStage gmCopy;
   static const ScalarFallbackLoweringStage scalarFallback;
   static const ReductionLoweringStage reduction;
   static const ParallelGenericLoweringStage parallelGeneric;
@@ -96,8 +105,9 @@ ArrayRef<const ComputeLoweringStage *> getComputeLoweringStages() {
   static const FillLoweringStage fill;
   static const LocalScalarFallbackLoweringStage localScalarFallback;
   static const ComputeLoweringStage *stages[] = {
-      &transpose,        &scalarFallback, &reduction, &parallelGeneric,
-      &matmul,           &elementwise,    &fill,      &localScalarFallback};
+      &transpose, &gmCopy,          &reduction,       &parallelGeneric,
+      &matmul,    &elementwise,     &fill,            &scalarFallback,
+      &localScalarFallback};
   return stages;
 }
 

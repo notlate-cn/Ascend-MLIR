@@ -1,6 +1,6 @@
 // RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.generic
 
-// Softmax: tests arith.subf, math.exp, arith.maximumf reduction, arith.addf reduction, arith.divf
+// Softmax: tests reduce_max_l2, arith.subf, exp_l2, reduce_sum_l2, arith.divf
 
 func.func @softmax(%input: tensor<4x32xf32>) -> tensor<4x32xf32> {
   // Step 1: row max reduction
@@ -83,7 +83,8 @@ func.func @softmax(%input: tensor<4x32xf32>) -> tensor<4x32xf32> {
 }
 
 // CHECK: func.func @softmax
-// CHECK: arith.maximumf
-// CHECK: math.exp
+// CHECK: ascendc.reduce_max_2d_l2
+// CHECK: ascendc.exp_l2
+// CHECK: ascendc.reduce_sum_2d_l2
 // CHECK: ascendc.div_l2
 // CHECK: return

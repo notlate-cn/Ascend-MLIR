@@ -33,12 +33,66 @@ TEST(ElementwiseBodyOpRegistryTest, BuiltinMathExpRegistered) {
   EXPECT_EQ(entry->binaryEmitter, nullptr);
 }
 
-TEST(ElementwiseBodyOpRegistryTest, UnsupportedMathOpsAreNotPlaceholderRegistered) {
+TEST(ElementwiseBodyOpRegistryTest, UnsupportedExp2IsNotPlaceholderRegistered) {
   EXPECT_EQ(lookupElementwiseBodyOp("math.exp2"), nullptr);
-  EXPECT_EQ(lookupElementwiseBodyOp("math.erf"), nullptr);
-  EXPECT_EQ(lookupElementwiseBodyOp("math.tanh"), nullptr);
-  EXPECT_EQ(lookupElementwiseBodyOp("math.sin"), nullptr);
-  EXPECT_EQ(lookupElementwiseBodyOp("math.cos"), nullptr);
+}
+
+TEST(ElementwiseBodyOpRegistryTest, BuiltinPyAscMathUnaryOpsRegistered) {
+  struct Case {
+    llvm::StringRef opName;
+    ComputeKind kind;
+  };
+  Case cases[] = {
+      {"math.acosh", ComputeKind::ElementwisePyAscMath},
+      {"math.acos", ComputeKind::ElementwisePyAscMath},
+      {"math.asinh", ComputeKind::ElementwisePyAscMath},
+      {"math.asin", ComputeKind::ElementwisePyAscMath},
+      {"math.atanh", ComputeKind::ElementwisePyAscMath},
+      {"math.atan", ComputeKind::ElementwisePyAscMath},
+      {"math.ceil", ComputeKind::ElementwisePyAscMath},
+      {"math.cosh", ComputeKind::ElementwisePyAscMath},
+      {"math.erf", ComputeKind::ElementwiseErf},
+      {"math.erfc", ComputeKind::ElementwisePyAscMath},
+      {"math.floor", ComputeKind::ElementwisePyAscMath},
+      {"math.tanh", ComputeKind::ElementwiseTanh},
+      {"math.round", ComputeKind::ElementwisePyAscMath},
+      {"math.sin", ComputeKind::ElementwiseSin},
+      {"math.sinh", ComputeKind::ElementwisePyAscMath},
+      {"math.cos", ComputeKind::ElementwiseCos},
+      {"math.tan", ComputeKind::ElementwisePyAscMath},
+      {"math.trunc", ComputeKind::ElementwisePyAscMath},
+      {"math.digamma", ComputeKind::ElementwisePyAscMath},
+      {"math.frac", ComputeKind::ElementwisePyAscMath},
+      {"math.lgamma", ComputeKind::ElementwisePyAscMath},
+      {"math.sign", ComputeKind::ElementwisePyAscMath},
+  };
+
+  for (const Case &testCase : cases) {
+    const ElementwiseBodyOpEntry *entry =
+        lookupElementwiseBodyOp(testCase.opName);
+    ASSERT_NE(entry, nullptr) << testCase.opName.str();
+    EXPECT_EQ(entry->kind, testCase.kind);
+    EXPECT_NE(entry->unaryEmitter, nullptr);
+    EXPECT_EQ(entry->binaryEmitter, nullptr);
+  }
+}
+
+TEST(ElementwiseBodyOpRegistryTest, BuiltinPyAscMathBinaryOpsRegistered) {
+  const ElementwiseBodyOpEntry *entry = lookupElementwiseBodyOp("math.powf");
+  ASSERT_NE(entry, nullptr);
+  EXPECT_EQ(entry->kind, ComputeKind::ElementwisePyAscMath);
+  EXPECT_EQ(entry->unaryEmitter, nullptr);
+  EXPECT_NE(entry->binaryEmitter, nullptr);
+}
+
+TEST(ElementwiseBodyOpRegistryTest, BuiltinPyAscBitwiseBinaryOpsRegistered) {
+  for (llvm::StringRef opName : {"arith.andi", "arith.ori", "arith.xori"}) {
+    const ElementwiseBodyOpEntry *entry = lookupElementwiseBodyOp(opName);
+    ASSERT_NE(entry, nullptr) << opName.str();
+    EXPECT_EQ(entry->kind, ComputeKind::ElementwisePyAscBitwise);
+    EXPECT_EQ(entry->unaryEmitter, nullptr);
+    EXPECT_NE(entry->binaryEmitter, nullptr);
+  }
 }
 
 TEST(ElementwiseBodyOpRegistryTest, BuiltinArithSubfRegistered) {

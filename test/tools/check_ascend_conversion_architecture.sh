@@ -55,6 +55,7 @@ reject_file() {
 
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringInternal.h"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringPipeline.cpp"
+require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringPolicy.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringContext.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeTransposeLowering.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeReductionLowering.cpp"
@@ -105,6 +106,34 @@ symbolic_tile_line_count=$(wc -l < "$KERNELIR_ROOT/ComputeSymbolicTileLowering.c
 if [[ "$symbolic_tile_line_count" -ge 1000 ]]; then
   fail "ComputeSymbolicTileLowering.cpp remains too large: $symbolic_tile_line_count lines"
 fi
+
+stage_order=$(sed -n '/static const ComputeLoweringStage \*stages\[\]/,/return stages;/p' \
+  "$COMPUTE_ROOT/ComputeLoweringPipeline.cpp" | tr -d '[:space:]')
+fallback_index=$(awk -v text="$stage_order" 'BEGIN { print index(text, "&scalarFallback") }')
+if [[ "$fallback_index" -le 0 ]]; then
+  fail "missing scalarFallback in compute lowering stage order"
+fi
+gm_copy_index=$(awk -v text="$stage_order" 'BEGIN { print index(text, "&gmCopy") }')
+parallel_index=$(awk -v text="$stage_order" 'BEGIN { print index(text, "&parallelGeneric") }')
+if [[ "$gm_copy_index" -le 0 ]]; then
+  fail "missing gmCopy in compute lowering stage order"
+fi
+if [[ "$parallel_index" -le 0 ]]; then
+  fail "missing parallelGeneric in compute lowering stage order"
+fi
+if [[ "$gm_copy_index" -ge "$parallel_index" ]]; then
+  fail "GM copy stage must run before parallel generic lowering"
+fi
+for native_stage in reduction parallelGeneric matmul elementwise fill; do
+  native_index=$(awk -v text="$stage_order" -v native="&${native_stage}" \
+    'BEGIN { print index(text, native) }')
+  if [[ "$native_index" -le 0 ]]; then
+    fail "missing native compute stage in stage order: ${native_stage}"
+  fi
+  if [[ "$fallback_index" -le "$native_index" ]]; then
+    fail "scalar fallback must run after native compute stage: ${native_stage}"
+  fi
+done
 
 require_dir "lib/Conversion/Ascend/Kernelize/Semantic"
 require_dir "lib/Conversion/Ascend/Kernelize/Preprocess"

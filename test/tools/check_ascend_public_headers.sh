@@ -5,6 +5,7 @@ ROOT="${1:-.}"
 cd "$ROOT"
 
 allowed_headers=(
+  "include/Conversion/Ascend/Translate/KernelIR/Capabilities/AscendCOpCapabilityRegistry.h"
   "include/Conversion/Ascend/Translate/KernelIR/Capabilities/BackendSupportMatrix.h"
   "include/Conversion/Ascend/Translate/KernelIR/ComputeLoweringPass.h"
   "include/Conversion/Ascend/Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.h"

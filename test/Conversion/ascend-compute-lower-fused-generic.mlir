@@ -21,6 +21,39 @@ func.func @fused_max_add_generic() {
       %relu = arith.maximumf %in0, %cst : f16
       %sum = arith.addf %relu, %in1 : f16
       linalg.yield %sum : f16
+  }
+  return
+}
+
+#gm_broadcast = affine_map<(d0, d1) -> (d1)>
+
+// CHECK-LABEL: func.func @gm_output_broadcast_add_generic
+// CHECK-NOT: emitasc.verbatim
+// CHECK: ascendc.global_tensor.set_global_buffer
+// CHECK-NOT: emitasc.verbatim
+// CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.local_tensor<*xf32>, !ascendc.global_tensor<*xf32>, index
+// CHECK-NOT: emitasc.verbatim
+// CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.local_tensor<*xf32>, !ascendc.global_tensor<*xf32>, index
+// CHECK-NOT: emitasc.verbatim
+// CHECK: ascendc.broadcast_l2
+// CHECK-NOT: emitasc.verbatim
+// CHECK: ascendc.add_l2
+// CHECK-NOT: emitasc.verbatim
+// CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.global_tensor<*xf32>, !ascendc.local_tensor<*xf32>, index
+// CHECK-NOT: emitasc.verbatim
+// CHECK-NOT: scf.for
+// CHECK-NOT: linalg.generic
+func.func @gm_output_broadcast_add_generic(%x: memref<4x8xf32>,
+                                           %bias: memref<8xf32>,
+                                           %out: memref<4x8xf32>) {
+  linalg.generic {
+      indexing_maps = [#map_identity, #gm_broadcast, #map_identity],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%x, %bias : memref<4x8xf32>, memref<8xf32>)
+      outs(%out : memref<4x8xf32>) {
+    ^bb0(%in0: f32, %in1: f32, %out0: f32):
+      %sum = arith.addf %in0, %in1 : f32
+      linalg.yield %sum : f32
     }
   return
 }

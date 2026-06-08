@@ -72,16 +72,18 @@ public:
     case ComputeKind::ElementwiseLog:
     case ComputeKind::ElementwiseSqrt:
     case ComputeKind::ElementwiseRsqrt:
+    case ComputeKind::ElementwiseTanh:
+    case ComputeKind::ElementwiseErf:
     case ComputeKind::ElementwiseAbs:
+    case ComputeKind::ElementwiseSin:
+    case ComputeKind::ElementwiseCos:
     case ComputeKind::ElementwiseMin:
+    case ComputeKind::ElementwisePyAscMath:
+    case ComputeKind::ElementwisePyAscBitwise:
       return !intrinsicModel->getIntrinsicsForUnit(
                                 ::mlir::ascend::ExecutionUnit::Vector)
                   .empty();
     case ComputeKind::ElementwiseExp2:
-    case ComputeKind::ElementwiseTanh:
-    case ComputeKind::ElementwiseErf:
-    case ComputeKind::ElementwiseSin:
-    case ComputeKind::ElementwiseCos:
     case ComputeKind::ElementwiseFma:
     case ComputeKind::ElementwiseReciprocal:
     case ComputeKind::ElementwiseRelu:

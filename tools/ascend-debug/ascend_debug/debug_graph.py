@@ -1365,7 +1365,7 @@ let canvasPanState = null;
 let graphViewState = {scale: 1};
 let activeSearchResults = [];
 let activeSearchIndex = 0;
-let stageNeighborhoodActive = Boolean(requestedNode);
+let stageNeighborhoodActive = Boolean(requestedNode) && !isSourceStage(workspace.stages[activeStageIndex]);
 const MIN_GRAPH_SCALE = 0.2;
 const MAX_GRAPH_SCALE = 3;
 const GRAPH_CANVAS_PADDING = 160;
@@ -2384,6 +2384,11 @@ function activeStage() {
   return workspace.stages[activeStageIndex] || workspace.stages[0] || null;
 }
 
+function isSourceStage(stage) {
+  if (!stage) return false;
+  return stage.name === "source" || stage.step === "source" || stage.stage_label === "Source";
+}
+
 function stageGroupForIndex(index) {
   const groups = Array.isArray(workspace.stage_groups) ? workspace.stage_groups : [];
   return groups.find((group) => {
@@ -2545,7 +2550,7 @@ function resolveStageNodeSelection(graph, signature) {
 function activateStageIndex(index) {
   pendingStageSelection = selectedStageNodeSignature(activeStage(), selectedKey);
   activeStageIndex = Number(index);
-  stageNeighborhoodActive = true;
+  stageNeighborhoodActive = !isSourceStage(activeStage());
   setMode("stage");
 }
 
@@ -3140,7 +3145,9 @@ ${badgeElements}
     : null;
   const selectedMatch = !pendingMatch && selectedKey && graph.nodes.some((node) => node.id === selectedKey) ? selectedKey : null;
   const preferred = pendingMatch || (requestedNodeMatch && requestedNodeMatch.id) || selectedMatch || (graph.nodes[0] && graph.nodes[0].id);
-  const shouldRefreshNeighborhood = Boolean(pendingMatch || requestedNodeMatch || stageNeighborhoodActive);
+  const pendingMatchShouldActivateNeighborhood = pendingMatch && !isSourceStage(stage);
+  const requestedNodeShouldActivateNeighborhood = requestedNodeMatch && !isSourceStage(stage);
+  const shouldRefreshNeighborhood = Boolean(pendingMatchShouldActivateNeighborhood || requestedNodeShouldActivateNeighborhood || stageNeighborhoodActive);
   if (requestedNodeMatch) requestedNodeConsumed = true;
   pendingStageSelection = null;
   if (preferred) selectStageNode(stage, graph, preferred, {neighborhood: shouldRefreshNeighborhood, updateUrl: false});

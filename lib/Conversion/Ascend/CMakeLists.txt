@@ -59,6 +59,7 @@ set(ASCEND_REALIZE_SOURCES
 )
 
 set(ASCEND_TRANSLATE_KERNELIR_SOURCES
+  Translate/KernelIR/Capabilities/AscendCOpCapabilityRegistry.cpp
   Translate/KernelIR/Capabilities/BackendSupportMatrix.cpp
   Translate/KernelIR/Capabilities/DefaultBackendCapabilityProvider.cpp
   Translate/KernelIR/Capabilities/TargetProfileBackendCapabilityProvider.cpp
@@ -67,6 +68,7 @@ set(ASCEND_TRANSLATE_KERNELIR_SOURCES
   Translate/KernelIR/LinalgToKernelIR.cpp
   Translate/KernelIR/DataMovementConversion.cpp
   Translate/KernelIR/ComputeSymbolicTileLowering.cpp
+  Translate/KernelIR/Compute/ComputeLoweringPolicy.cpp
   Translate/KernelIR/Compute/ComputeOpConversion.cpp
   Translate/KernelIR/Compute/ComputeLoweringContext.cpp
   Translate/KernelIR/Compute/ComputeTransposeLowering.cpp

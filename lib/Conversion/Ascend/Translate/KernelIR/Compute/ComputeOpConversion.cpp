@@ -16,7 +16,6 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.h"
-#include "Conversion/Ascend/Translate/KernelIR/Capabilities/LinalgBodyClassifier.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -530,6 +529,25 @@ Value copyRank2GmSubviewRowsToVecin(
   return dequeued;
 }
 
+LogicalResult lowerGmCopyComputes(ComputeLoweringContext &lowering) {
+  func::FuncOp funcOp = lowering.funcOp;
+  OpBuilder &builder = lowering.builder;
+  SmallVector<linalg::GenericOp> genericOps;
+  funcOp.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
+
+  for (linalg::GenericOp genOp : genericOps) {
+    builder.setInsertionPoint(genOp);
+    if (succeeded(
+            lowerProjectedSuffixCopyToSegmentDataCopy(builder, genOp,
+                                                      lowering.ctx.pipe))) {
+      genOp.erase();
+      continue;
+    }
+  }
+
+  return success();
+}
+
 LogicalResult lowerScalarFallbackComputes(ComputeLoweringContext &lowering) {
   func::FuncOp funcOp = lowering.funcOp;
   OpBuilder &builder = lowering.builder;
@@ -541,12 +559,6 @@ LogicalResult lowerScalarFallbackComputes(ComputeLoweringContext &lowering) {
       continue;
 
     builder.setInsertionPoint(genOp);
-    if (succeeded(
-            lowerProjectedSuffixCopyToSegmentDataCopy(builder, genOp,
-                                                      lowering.ctx.pipe))) {
-      genOp.erase();
-      continue;
-    }
 
     if (failed(lowerGmGenericToScalarLoops(builder, genOp))) {
       genOp.emitError("failed to lower GM generic scalar loop");

@@ -1,12 +1,11 @@
 // RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=KERNELIZE
-// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC' --ascend-kernel-split --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s --implicit-check-not=ascendc.mmad --implicit-check-not=ascendc.load_data_with_transpose
+// RUN: not ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC' --ascend-kernel-split --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature 2>&1 | FileCheck %s --check-prefix=LOWER-FAIL
 
 // Real 910B1 validation showed f32 batch_matmul with a fused epilogue must
 // not enter the mix/cube A2/B2/CO1 path: the generated f32 B1->B2 LoadData
-// faults on hardware.
+// faults on hardware. It must also not silently fall back to scalar loops.
 
-// CHECK: func.func @kernel_
-// CHECK: scf.for
+// LOWER-FAIL: unsupported GM-output batch_matmul lowering: materialize GM tensors through cube/local buffers before lowering; scalar loop fallback is disabled
 
 // KERNELIZE: linalg.batch_matmul
 // KERNELIZE-NOT: ascend.op_role = "cube"

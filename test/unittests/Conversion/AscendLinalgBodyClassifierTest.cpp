@@ -296,6 +296,122 @@ module {
   EXPECT_TRUE(isSupportedBackendVectorOutput(generic, matrix));
 }
 
+TEST(AscendLinalgBodyClassifierTest, SupportsPyAscMathUnaryVectorBody) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xf32, 9 : i32>,
+               %out: memref<4x8xf32, 10 : i32>) {
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0 : memref<4x8xf32, 9 : i32>)
+      outs(%out : memref<4x8xf32, 10 : i32>)
+      attrs = {ascend.op_role = "vector"} {
+    ^bb0(%value: f32, %old: f32):
+      %0 = math.erf %value : f32
+      %1 = math.tanh %0 : f32
+      %2 = math.sin %1 : f32
+      %3 = math.cos %2 : f32
+      linalg.yield %3 : f32
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::GenericOp generic = findFirstGeneric(*module);
+  ASSERT_TRUE(generic);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
+            ComputeKind::FusedElementwise);
+  EXPECT_TRUE(isSupportedBackendVectorOutput(generic, matrix));
+}
+
+TEST(AscendLinalgBodyClassifierTest, SupportsGenericPyAscMathVectorBody) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xf32, 9 : i32>,
+               %arg1: memref<4x8xf32, 9 : i32>,
+               %out: memref<4x8xf32, 10 : i32>) {
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0, %arg1 : memref<4x8xf32, 9 : i32>,
+                         memref<4x8xf32, 9 : i32>)
+      outs(%out : memref<4x8xf32, 10 : i32>)
+      attrs = {ascend.op_role = "vector"} {
+    ^bb0(%value: f32, %exp: f32, %old: f32):
+      %0 = math.ceil %value : f32
+      %1 = math.floor %0 : f32
+      %2 = math.round %1 : f32
+      %3 = math.powf %2, %exp : f32
+      linalg.yield %3 : f32
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::GenericOp generic = findFirstGeneric(*module);
+  ASSERT_TRUE(generic);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
+            ComputeKind::FusedElementwise);
+  EXPECT_TRUE(isSupportedBackendVectorOutput(generic, matrix));
+}
+
+TEST(AscendLinalgBodyClassifierTest, SupportsPyAscBitwiseBinaryVectorBody) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xi32, 9 : i32>,
+               %arg1: memref<4x8xi32, 9 : i32>,
+               %arg2: memref<4x8xi32, 9 : i32>,
+               %out: memref<4x8xi32, 10 : i32>) {
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0, %arg1, %arg2 : memref<4x8xi32, 9 : i32>,
+                                 memref<4x8xi32, 9 : i32>,
+                                 memref<4x8xi32, 9 : i32>)
+      outs(%out : memref<4x8xi32, 10 : i32>)
+      attrs = {ascend.op_role = "vector"} {
+    ^bb0(%lhs: i32, %rhs: i32, %mask: i32, %old: i32):
+      %0 = arith.andi %lhs, %rhs : i32
+      %1 = arith.ori %0, %mask : i32
+      %2 = arith.xori %1, %rhs : i32
+      linalg.yield %2 : i32
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::GenericOp generic = findFirstGeneric(*module);
+  ASSERT_TRUE(generic);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
+            ComputeKind::FusedElementwise);
+  EXPECT_TRUE(isSupportedBackendVectorOutput(generic, matrix));
+}
+
 TEST(AscendLinalgBodyClassifierTest, RejectsUnsupportedVectorDtype) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseClassifierModule(

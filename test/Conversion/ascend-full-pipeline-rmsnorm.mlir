@@ -1,7 +1,7 @@
 // RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.generic
 
 // RMSNorm: x / sqrt(mean(x^2) + eps)
-// Tests: arith.mulf (fused with addf in reduction), math.rsqrt, arith.divf
+// Tests: arith.mulf (fused with addf in reduction), rsqrt_l2, arith.divf
 
 func.func @rmsnorm(%input: tensor<4x32xf32>, %weight: tensor<32xf32>) -> tensor<4x32xf32> {
   %cst_eps = arith.constant 1.0e-6 : f32
@@ -77,6 +77,6 @@ func.func @rmsnorm(%input: tensor<4x32xf32>, %weight: tensor<32xf32>) -> tensor<
 
 // CHECK: func.func @rmsnorm
 // CHECK: ascendc.mul_l2
-// CHECK: math.rsqrt
+// CHECK: ascendc.rsqrt_l2
 // CHECK: ascendc.mul_l2
 // CHECK: return

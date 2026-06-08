@@ -63,6 +63,11 @@ struct IndexingMapAnalysis {
   SmallVector<int64_t> broadcastDims;
 };
 
+enum class GmOutputNativeLoweringKind {
+  None,
+  FusedElementwiseVector,
+};
+
 using OwnedQueueTensor = std::pair<Value, Value>;
 
 LogicalResult prepareComputeLoweringPreconditions(func::FuncOp funcOp);
@@ -76,6 +81,7 @@ void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
 bool isPureYieldGeneric(linalg::GenericOp op);
 bool isGmAllParallelGeneric(linalg::GenericOp op);
 bool isGmScalarLoopGeneric(linalg::GenericOp op);
+GmOutputNativeLoweringKind getGmOutputNativeLoweringKind(Operation *op);
 LogicalResult lowerTransposeToLoops(OpBuilder &builder, Location loc,
                                     Value inMemref, Value outMemref,
                                     ArrayRef<int64_t> permutation);
@@ -129,6 +135,7 @@ Value copyRank2GmSubviewRowsToVecin(
     SmallVectorImpl<OwnedQueueTensor> *ownedTensors = nullptr);
 
 LogicalResult lowerScalarFallbackComputes(ComputeLoweringContext &lowering);
+LogicalResult lowerGmCopyComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerTransposeComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering);

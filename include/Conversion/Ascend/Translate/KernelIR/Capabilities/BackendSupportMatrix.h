@@ -53,6 +53,8 @@ enum class ComputeKind {
   ElementwiseRelu,
   ElementwiseSelect,
   ElementwiseMin,
+  ElementwisePyAscMath,
+  ElementwisePyAscBitwise,
   // reduction ops
   ReductionMax,
   ReductionMin,

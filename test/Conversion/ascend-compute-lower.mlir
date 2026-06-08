@@ -88,6 +88,20 @@ func.func @copy_co1_to_vecin() {
 }
 
 //===----------------------------------------------------------------------===//
+// Data-move: CO1 → VECOUT (data_copy_co12dst)
+//===----------------------------------------------------------------------===//
+// CHECK-LABEL: func @copy_co1_to_vecout
+// CHECK: ascendc.construct !ascendc.data_copy_co12dst_params
+// CHECK: ascendc.data_copy_co12dst
+// CHECK-NOT: memref.copy
+func.func @copy_co1_to_vecout() {
+  %src = memref.alloc() : memref<16x16xf32, 7 : i32>
+  %dst = memref.alloc() : memref<16x16xf32, 10 : i32>
+  memref.copy %src, %dst : memref<16x16xf32, 7 : i32> to memref<16x16xf32, 10 : i32>
+  return
+}
+
+//===----------------------------------------------------------------------===//
 // Data-move: VECOUT → GM (data_copy_l2)
 //===----------------------------------------------------------------------===//
 // CHECK-LABEL: func @copy_vecout_to_gm

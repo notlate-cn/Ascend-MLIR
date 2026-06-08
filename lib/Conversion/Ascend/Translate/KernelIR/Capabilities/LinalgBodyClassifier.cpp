@@ -484,9 +484,12 @@ bool isSupportedBackendVectorOutput(
   case ComputeKind::ElementwiseRelu:
   case ComputeKind::ElementwiseSelect:
   case ComputeKind::ElementwiseMin:
-  case ComputeKind::FusedElementwise:
+  case ComputeKind::ElementwisePyAscMath:
+  case ComputeKind::ElementwisePyAscBitwise:
     return matrix.isSupportedComputeKind(kind) &&
            hasSupportedDtypes(linalgOp, kind, matrix);
+  case ComputeKind::FusedElementwise:
+    return matrix.isSupportedComputeKind(kind);
   default:
     return false;
   }

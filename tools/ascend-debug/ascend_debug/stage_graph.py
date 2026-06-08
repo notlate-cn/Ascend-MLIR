@@ -862,26 +862,45 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
     lines = text.splitlines()
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
-    producer_by_value: dict[str, str] = {}
-    alias_base_by_value: dict[str, str] = {}
-    memory_writers_by_base: dict[str, list[str]] = {}
+    producer_by_value: dict[str, dict[str, str]] = {}
+    alias_base_by_value: dict[str, dict[str, str]] = {}
+    memory_writers_by_base: dict[str, dict[str, list[str]]] = {}
     memory_effect_edges: set[tuple[str, str, str]] = set()
-    resource_writer_by_value: dict[str, str] = {}
+    resource_writer_by_value: dict[str, dict[str, str]] = {}
     resource_effect_edges: set[tuple[str, str, str, str]] = set()
     control_edges: set[tuple[str, str, str]] = set()
     last_effect_node: str | None = None
     pending_barrier_node: str | None = None
-    defined_values: set[str] = set()
+    defined_values: dict[str, set[str]] = {}
     function_names: list[str] = []
     function_node_ids: dict[str, list[str]] = {}
     function_records: dict[str, dict[str, Any]] = {}
 
-    def alias_base(value: str) -> str:
+    def scope_key(function_name: str | None) -> str:
+        return function_name or ""
+
+    def value_producers(function_name: str | None) -> dict[str, str]:
+        return producer_by_value.setdefault(scope_key(function_name), {})
+
+    def value_aliases(function_name: str | None) -> dict[str, str]:
+        return alias_base_by_value.setdefault(scope_key(function_name), {})
+
+    def memory_writers(function_name: str | None) -> dict[str, list[str]]:
+        return memory_writers_by_base.setdefault(scope_key(function_name), {})
+
+    def resource_writers(function_name: str | None) -> dict[str, str]:
+        return resource_writer_by_value.setdefault(scope_key(function_name), {})
+
+    def value_defs(function_name: str | None) -> set[str]:
+        return defined_values.setdefault(scope_key(function_name), set())
+
+    def alias_base(function_name: str | None, value: str) -> str:
+        aliases = value_aliases(function_name)
         seen: set[str] = set()
         current = value
-        while current in alias_base_by_value and current not in seen:
+        while current in aliases and current not in seen:
             seen.add(current)
-            current = alias_base_by_value[current]
+            current = aliases[current]
         return current
 
     def append_edge(
@@ -957,8 +976,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             }
             nodes.append(node)
             function_node_ids[function_name].append(node_id)
-            producer_by_value[arg["name"]] = node_id
-            defined_values.add(arg["name"])
+            value_producers(function_name)[arg["name"]] = node_id
+            value_defs(function_name).add(arg["name"])
         index = next_index
 
     index = 0
@@ -969,6 +988,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         func_decl = _parse_func_decl(func_header) if func_header else None
         if func_decl:
             current_function = func_decl[0]
+            last_effect_node = None
+            pending_barrier_node = None
             note_function(current_function)
             _, next_index = _collect_func_header(lines, index)
             index = next_index
@@ -986,8 +1007,9 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             result_values = [value.strip() for value in op_match.group("results").split(",")]
             raw_values = SSA_VALUE_RE.findall(op_text)
             input_values = []
+            current_defs = value_defs(current_function)
             for value in raw_values:
-                if value in result_values or value not in defined_values:
+                if value in result_values or value not in current_defs:
                     continue
                 if value not in input_values:
                     input_values.append(value)
@@ -996,8 +1018,9 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             op_text, next_index = _collect_op_text(lines, index, op_name)
             result_values = []
             input_values = []
+            current_defs = value_defs(current_function)
             for value in SSA_VALUE_RE.findall(op_text):
-                if value in defined_values and value not in input_values:
+                if value in current_defs and value not in input_values:
                     input_values.append(value)
         else:
             op_name = "func.return"
@@ -1005,8 +1028,9 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             next_index = index + 1
             result_values = []
             input_values = []
+            current_defs = value_defs(current_function)
             for value in SSA_VALUE_RE.findall(line):
-                if value in defined_values and value not in input_values:
+                if value in current_defs and value not in input_values:
                     input_values.append(value)
 
         node_id = f"n{len(nodes)}"
@@ -1040,17 +1064,17 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             function_node_ids.setdefault(current_function, []).append(node_id)
 
         for value in input_values:
-            producer = producer_by_value.get(value)
+            producer = value_producers(current_function).get(value)
             if producer:
                 append_edge(producer, node_id, value)
         memory_bases = []
         for value in input_values:
-            base = alias_base(value)
+            base = alias_base(current_function, value)
             if base not in memory_bases:
                 memory_bases.append(base)
         if _observes_memory_effect(op_name):
             for base in memory_bases:
-                for writer in memory_writers_by_base.get(base, []):
+                for writer in memory_writers(current_function).get(base, []):
                     if writer == node_id:
                         continue
                     key = (writer, node_id, base)
@@ -1059,19 +1083,22 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                     memory_effect_edges.add(key)
                     append_edge(writer, node_id, base, kind="memory_effect", effect="write")
         for value in result_values:
-            producer_by_value[value] = node_id
-            defined_values.add(value)
+            value_producers(current_function)[value] = node_id
+            value_defs(current_function).add(value)
         if op_name in ("memref.subview", "memref.cast", "memref.reinterpret_cast") and input_values:
-            base = alias_base(input_values[0])
+            base = alias_base(current_function, input_values[0])
             for value in result_values:
-                alias_base_by_value[value] = base
+                value_aliases(current_function)[value] = base
         written_bases = []
         if op_name == "memref.copy" and len(input_values) >= 2:
-            written_bases.append(alias_base(input_values[1]))
+            written_bases.append(alias_base(current_function, input_values[1]))
         if op_name.startswith("linalg."):
-            written_bases.extend(alias_base(value) for value in _extract_linalg_out_values(op_text))
+            written_bases.extend(
+                alias_base(current_function, value)
+                for value in _extract_linalg_out_values(op_text)
+            )
         for base in written_bases:
-            writers = memory_writers_by_base.setdefault(base, [])
+            writers = memory_writers(current_function).setdefault(base, [])
             if node_id not in writers:
                 writers.append(node_id)
         resource_reads, resource_writes, is_barrier = _classify_resource_access(
@@ -1088,7 +1115,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                 append_control_edge(pending_barrier_node, node_id, "pipe_all", "barrier")
                 pending_barrier_node = None
             for value in resource_reads + resource_writes:
-                writer = resource_writer_by_value.get(value)
+                writer = resource_writers(current_function).get(value)
                 if not writer or writer == node_id:
                     continue
                 effect = "write" if value in resource_writes else "read"
@@ -1098,7 +1125,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                 resource_effect_edges.add(key)
                 append_edge(writer, node_id, value, kind="resource_effect", effect=effect)
             for value in resource_writes:
-                resource_writer_by_value[value] = node_id
+                resource_writers(current_function)[value] = node_id
             last_effect_node = node_id
         elif written_bases:
             last_effect_node = node_id

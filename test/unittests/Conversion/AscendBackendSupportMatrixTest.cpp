@@ -4,6 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/AscendCOpCapabilityRegistry.h"
 #include "Conversion/Ascend/Translate/KernelIR/Capabilities/BackendSupportMatrix.h"
 
 #include "Target/Ascend/TargetProfile.h"
@@ -52,6 +53,8 @@ TEST(AscendBackendSupportMatrixTest, SupportsKnownMovementPaths) {
   EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::B1, MemorySpace::B2));
   EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::CO1,
                                              MemorySpace::VECIN));
+  EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::CO1,
+                                             MemorySpace::VECOUT));
   EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::VECOUT,
                                              MemorySpace::GM));
 }
@@ -96,16 +99,19 @@ TEST(AscendBackendSupportMatrixTest, SupportsKnownComputeKinds) {
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ScalarGeneric));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::Transpose));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ReductionAdd));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseTanh));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseErf));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseSin));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseCos));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwisePyAscMath));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(
+      ComputeKind::ElementwisePyAscBitwise));
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::Unknown));
 }
 
 TEST(AscendBackendSupportMatrixTest, RejectsAdvertisedButUnloweredComputeKinds) {
   AscendBackendSupportMatrix matrix;
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseExp2));
-  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseTanh));
-  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseErf));
-  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseSin));
-  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseCos));
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseFma));
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseReciprocal));
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseRelu));
@@ -126,6 +132,42 @@ TEST(AscendBackendSupportMatrixTest, RejectsUnsupportedDtypes) {
   mlir::Type i8 = builder.getI8Type();
   EXPECT_FALSE(matrix.isSupportedDtype(ComputeKind::ElementwiseAdd, {i8},
                                        {i8}));
+  EXPECT_TRUE(matrix.isSupportedDtype(ComputeKind::ElementwisePyAscBitwise,
+                                      {builder.getI32Type()},
+                                      {builder.getI32Type()}));
+  EXPECT_FALSE(matrix.isSupportedDtype(ComputeKind::ElementwisePyAscBitwise,
+                                       {builder.getF32Type()},
+                                       {builder.getF32Type()}));
+}
+
+TEST(AscendBackendSupportMatrixTest, MmadCapabilityReportsDtypeLegalization) {
+  mlir::MLIRContext context;
+  mlir::Builder builder(&context);
+
+  const AscendCOpCapability *capability =
+      lookupAscendCOpCapability(AscendCOpKind::Mmad);
+  ASSERT_NE(capability, nullptr);
+  EXPECT_EQ(capability->opName, "ascendc.mmad");
+  EXPECT_EQ(capability->computeKind, ComputeKind::Matmul);
+  EXPECT_EQ(capability->targetUnit, AscendCTargetUnit::Cube);
+  ASSERT_GE(capability->dtypeOperands.size(), 3u);
+
+  const AscendCOperandDtypeRule &dst = capability->dtypeOperands[0];
+  const AscendCOperandDtypeRule &lhs = capability->dtypeOperands[1];
+  const AscendCOperandDtypeRule &rhs = capability->dtypeOperands[2];
+  EXPECT_EQ(dst.role, AscendCOperandRole::OutputAccumulator);
+  EXPECT_EQ(lhs.role, AscendCOperandRole::Lhs);
+  EXPECT_EQ(rhs.role, AscendCOperandRole::Rhs);
+  EXPECT_TRUE(isAscendCOperandDtypeAllowed(dst, builder.getF32Type()));
+  EXPECT_TRUE(isAscendCOperandDtypeAllowed(lhs, builder.getF16Type()));
+  EXPECT_TRUE(isAscendCOperandDtypeAllowed(rhs, builder.getBF16Type()));
+  EXPECT_FALSE(isAscendCOperandDtypeAllowed(lhs, builder.getF32Type()));
+
+  llvm::SmallVector<mlir::Type, 2> targets;
+  appendAscendCOperandLegalizationTargets(lhs, builder.getF32Type(), targets);
+  ASSERT_EQ(targets.size(), 2u);
+  EXPECT_TRUE(targets[0].isBF16());
+  EXPECT_TRUE(targets[1].isF16());
 }
 
 TEST(AscendBackendSupportMatrixTest,

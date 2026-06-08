@@ -111,6 +111,9 @@ llvm::StringRef stringifyComputeKind(ComputeKind kind) {
   case ComputeKind::ElementwiseRelu:       return "elementwise_relu";
   case ComputeKind::ElementwiseSelect:     return "elementwise_select";
   case ComputeKind::ElementwiseMin:        return "elementwise_min";
+  case ComputeKind::ElementwisePyAscMath:  return "elementwise_pyasc_math";
+  case ComputeKind::ElementwisePyAscBitwise:
+    return "elementwise_pyasc_bitwise";
   case ComputeKind::ReductionMax:          return "reduction_max";
   case ComputeKind::ReductionMin:          return "reduction_min";
   case ComputeKind::ReductionMul:          return "reduction_mul";

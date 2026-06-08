@@ -20,59 +20,6 @@ using namespace mlir::ascendc;
 namespace mlir::ascend {
 namespace {
 
-void lowerBatchMatmulToLoops(OpBuilder &builder, linalg::BatchMatmulOp op) {
-  Location loc = op.getLoc();
-  Value lhs = op.getDpsInputOperand(0)->get();
-  Value rhs = op.getDpsInputOperand(1)->get();
-  Value out = op.getDpsInitOperand(0)->get();
-
-  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
-  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
-  Value batch = getDimValue(builder, loc, out, 0);
-  Value mSize = getDimValue(builder, loc, out, 1);
-  Value nSize = getDimValue(builder, loc, out, 2);
-  Value kSize = getDimValue(builder, loc, lhs, 2);
-
-  auto forB = builder.create<scf::ForOp>(loc, c0, batch, c1);
-  {
-    OpBuilder::InsertionGuard guardB(builder);
-    builder.setInsertionPointToStart(forB.getBody());
-    Value b = forB.getInductionVar();
-    auto forM = builder.create<scf::ForOp>(loc, c0, mSize, c1);
-    {
-      OpBuilder::InsertionGuard guardM(builder);
-      builder.setInsertionPointToStart(forM.getBody());
-      Value m = forM.getInductionVar();
-      auto forN = builder.create<scf::ForOp>(loc, c0, nSize, c1);
-      {
-        OpBuilder::InsertionGuard guardN(builder);
-        builder.setInsertionPointToStart(forN.getBody());
-        Value n = forN.getInductionVar();
-        Value init =
-            builder.create<memref::LoadOp>(loc, out, ValueRange{b, m, n});
-        auto forK =
-            builder.create<scf::ForOp>(loc, c0, kSize, c1, ValueRange{init});
-        {
-          OpBuilder::InsertionGuard guardK(builder);
-          builder.setInsertionPointToStart(forK.getBody());
-          Value k = forK.getInductionVar();
-          Value acc = forK.getRegionIterArgs().front();
-          Value lhsValue =
-              builder.create<memref::LoadOp>(loc, lhs, ValueRange{b, m, k});
-          Value rhsValue =
-              builder.create<memref::LoadOp>(loc, rhs, ValueRange{b, k, n});
-          Value product =
-              builder.create<arith::MulFOp>(loc, lhsValue, rhsValue);
-          Value sum = builder.create<arith::AddFOp>(loc, acc, product);
-          builder.create<scf::YieldOp>(loc, sum);
-        }
-        builder.create<memref::StoreOp>(loc, forK.getResult(0), out,
-                                        ValueRange{b, m, n});
-      }
-    }
-  }
-}
-
 void lowerMatmulToLoops(OpBuilder &builder, linalg::MatmulOp op) {
   Location loc = op.getLoc();
   Value lhs = op.getDpsInputOperand(0)->get();
@@ -127,12 +74,13 @@ LogicalResult lowerMatmulComputes(ComputeLoweringContext &lowering) {
 
   for (linalg::BatchMatmulOp batchMatmulOp : batchMatmulOps) {
     Value out = batchMatmulOp.getDpsInitOperand(0)->get();
-    if (getMemorySpace(out.getType()) != 0)
-      continue;
-
-    builder.setInsertionPoint(batchMatmulOp);
-    lowerBatchMatmulToLoops(builder, batchMatmulOp);
-    batchMatmulOp.erase();
+    if (getMemorySpace(out.getType()) == 0) {
+      batchMatmulOp.emitError(
+          "unsupported GM-output batch_matmul lowering: materialize GM tensors "
+          "through cube/local buffers before lowering; scalar loop fallback is "
+          "disabled");
+      return failure();
+    }
   }
 
   batchMatmulOps.clear();

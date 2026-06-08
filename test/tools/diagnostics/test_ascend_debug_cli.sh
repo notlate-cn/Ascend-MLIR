@@ -348,6 +348,86 @@ debug_html = (debug_run / "views/debug_graph.html").read_text()
 assert "Schedule Axis Contract" in debug_html, debug_html
 assert "axisContract.shape_constraints" in debug_html, debug_html
 
+multi_source_mlir = """module {
+  func.func @kernel_a(%a: tensor<?xf16>, %b: tensor<?xf16>) -> tensor<?xf16> {
+    %c0 = arith.constant 0 : index
+    %n = tensor.dim %a, %c0 : tensor<?xf16>
+    %init = tensor.empty(%n) : tensor<?xf16>
+    %mid = linalg.generic {indexing_maps = [], iterator_types = ["parallel"]} ins(%a, %b : tensor<?xf16>, tensor<?xf16>) outs(%init : tensor<?xf16>) {
+    ^bb0(%x: f16, %y: f16, %o: f16):
+      %v = arith.addf %x, %y : f16
+      linalg.yield %v : f16
+    } -> tensor<?xf16>
+    return %mid : tensor<?xf16>
+  }
+  func.func @kernel_b(%mid: tensor<?xf16>, %scale: tensor<?x?xf16>) -> tensor<?x?xf16> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = tensor.dim %scale, %c0 : tensor<?x?xf16>
+    %k = tensor.dim %scale, %c1 : tensor<?x?xf16>
+    %init = tensor.empty(%n, %k) : tensor<?x?xf16>
+    %out = linalg.generic {indexing_maps = [], iterator_types = ["parallel", "parallel"]} ins(%mid, %scale : tensor<?xf16>, tensor<?x?xf16>) outs(%init : tensor<?x?xf16>) {
+    ^bb0(%x: f16, %y: f16, %o: f16):
+      %v = arith.addf %x, %y : f16
+      linalg.yield %v : f16
+    } -> tensor<?x?xf16>
+    return %out : tensor<?x?xf16>
+  }
+}
+"""
+multi_source_graph = stage_graph.parse_stage_mlir(
+    {"order": 0, "name": "source", "path": "stages/000-source.mlir"},
+    multi_source_mlir,
+)
+multi_source_nodes = {node["id"]: node for node in multi_source_graph["nodes"]}
+multi_source_cross_edges = [
+    edge
+    for edge in multi_source_graph["edges"]
+    if multi_source_nodes[edge["from"]].get("function") != multi_source_nodes[edge["to"]].get("function")
+]
+assert multi_source_cross_edges == [], multi_source_cross_edges
+kernel_a_return = next(
+    node
+    for node in multi_source_graph["nodes"]
+    if node["function"] == "kernel_a" and node["op_name"] == "func.return"
+)
+assert any(
+    edge["to"] == kernel_a_return["id"] and edge["value"] == "%mid"
+    for edge in multi_source_graph["edges"]
+), multi_source_graph["edges"]
+multi_source_run = pathlib.Path(tempfile.mkdtemp(prefix="ascend-debug-multi-source."))
+layout.prepare_run_dir(multi_source_run)
+layout.write_json(multi_source_run / "graphs/stages/000-source.graph.json", multi_source_graph)
+debug_graph.render_debug_graph(
+    run_dir=multi_source_run,
+    manifest={
+        "stages": [
+            {
+                "order": 0,
+                "name": "source",
+                "path": "stages/000-source.mlir",
+            }
+        ],
+        "reports": [],
+    },
+    stage_graph_views={
+        "stages/000-source.mlir": {
+            "json_rel_path": "graphs/stages/000-source.graph.json"
+        }
+    },
+    kernel_summary=None,
+    tensor_diff=None,
+    locate_summary=None,
+    memory_summary=None,
+)
+multi_source_html = (multi_source_run / "views/debug_graph.html").read_text()
+assert 'func.func @${escapeHtml(frame.name)}' in multi_source_html, multi_source_html
+assert 'function isSourceStage(stage)' in multi_source_html, multi_source_html
+assert 'let stageNeighborhoodActive = Boolean(requestedNode) && !isSourceStage(workspace.stages[activeStageIndex]);' in multi_source_html, multi_source_html
+assert 'stageNeighborhoodActive = !isSourceStage(activeStage());' in multi_source_html, multi_source_html
+assert 'const pendingMatchShouldActivateNeighborhood = pendingMatch && !isSourceStage(stage);' in multi_source_html, multi_source_html
+assert 'const requestedNodeShouldActivateNeighborhood = requestedNodeMatch && !isSourceStage(stage);' in multi_source_html, multi_source_html
+
 resource_mlir = """module {
   func.func @resource_chain(%pipe: i32, %src: i32, %bytes: index) {
     %c1 = arith.constant 1 : i32

@@ -1,4 +1,4 @@
-// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.
+// RUN: not ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower 2>&1 | FileCheck %s
 
 func.func @sdpa_like_supported_body(%q: tensor<2x4x8xf16>,
                                     %k: tensor<2x8x4xf16>,
@@ -44,6 +44,4 @@ func.func @sdpa_like_supported_body(%q: tensor<2x4x8xf16>,
   return %out : tensor<2x4x8xf16>
 }
 
-// CHECK: ascend.schedule.tuning_cache = ["attention_sdpa|grouped_tile_per_block|2x4x8|2x4x8x4"]
-// CHECK: ascendc.add_l2
-// CHECK: return
+// CHECK: unsupported GM-output batch_matmul lowering: materialize GM tensors through cube/local buffers before lowering; scalar loop fallback is disabled

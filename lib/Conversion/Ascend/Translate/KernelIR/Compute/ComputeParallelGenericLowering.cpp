@@ -16,7 +16,6 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.h"
-#include "Conversion/Ascend/Translate/KernelIR/Capabilities/LinalgBodyClassifier.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -51,7 +50,7 @@ namespace ascend {
 LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
   func::FuncOp funcOp = lowering.funcOp;
   OpBuilder &builder = lowering.builder;
-  // --- linalg.generic {all-parallel, on-chip output} ---
+  // --- linalg.generic {all-parallel, native path} ---
   //
   // Pure-parallel generic lowering (e.g. broadcast+add, broadcast+mul).
   // These have iterator_types = ["parallel", "parallel", ...] with no reduction.
@@ -59,8 +58,7 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
   // Strategy mirrors the reduction path (Steps 1-2) but skips Step 3:
   //   GM/VECIN inputs → promote to VECCALC local_tensors (broadcast_l2 or copy)
   //   Body arith ops → inline as AscendC vector ops on VECCALC accumulator
-  //   Final result   → write directly to VECOUT (writeTensor handles alloc)
-  //   Enqueue VECOUT for downstream data-move epilogue copy
+  //   Final result   → enqueue VECOUT or explicitly copy a VECCALC result to GM
   //
   // Concat semantics are implicitly handled: the VECOUT->GM copy op from
   // memory realization targets a memref subview of the output buffer with the
@@ -84,10 +82,17 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
                TransposeLoweringKind::AscendCSimple2D;
   };
 
-
   for (linalg::GenericOp genOp : parallelGenericOps) {
     Value outMemref = genOp.getDpsInitOperand(0)->get();
     int64_t outMs   = getMemorySpace(outMemref.getType());
+    GmOutputNativeLoweringKind nativeGmOutputKind =
+        ::mlir::ascend::getGmOutputNativeLoweringKind(
+            genOp.getOperation());
+    bool hasNativeGmOutputPath =
+        nativeGmOutputKind != GmOutputNativeLoweringKind::None;
+    bool copyVectorResultToGm =
+        nativeGmOutputKind ==
+        GmOutputNativeLoweringKind::FusedElementwiseVector;
     if (outMs == 0 && isPureYieldGeneric(genOp)) {
       builder.setInsertionPoint(genOp);
       if (failed(lowerPureYieldGenericToLoops(builder, genOp))) {
@@ -97,7 +102,8 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
       genOp.erase();
       continue;
     }
-    if (outMs == 0 && isGmAllParallelGeneric(genOp)) {
+    if (outMs == 0 && isGmAllParallelGeneric(genOp) &&
+        !hasNativeGmOutputPath) {
       builder.setInsertionPoint(genOp);
       if (failed(lowerAllParallelGenericToLoops(builder, genOp))) {
         genOp.emitError("failed to lower GM all-parallel generic");
@@ -106,8 +112,8 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
       genOp.erase();
       continue;
     }
-    if (outMs <= 0)
-      continue; // output must be on-chip (VECOUT or VECCALC)
+    if (outMs <= 0 && !hasNativeGmOutputPath)
+      continue; // GM output needs an explicit native copy-back path.
 
     if (genOp->hasAttr(ascend::kGatherDimAttr)) {
       if (failed(lowerGatherCompute(lowering, genOp, parallelGenericOps)))
@@ -269,9 +275,9 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
           builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                          /*size=*/Value{});
           Value srcLt =
-              copyGmToVecinScalar(lowering, builder, loc, elemType, srcGt,
-                                  srcElemCount, srcBufferElemCount,
-                                  &ownedInputTensors);
+              copyGmToVecin(lowering, builder, loc, elemType, srcGt,
+                            srcElemCount, srcBufferElemCount,
+                            &ownedInputTensors);
           SmallVector<Value> dstShapeVals, srcShapeVals;
           for (Value s : iterDimSizes)
             dstShapeVals.push_back(
@@ -485,19 +491,25 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
     // No reduction needed (all-parallel). The compute result is in accumLt
     // (a VECCALC tbuf). We need to deliver it to the output buffer:
     //
-    //   VECOUT (ms=10): alloc from queue, use AddL2 to copy accumLt→vecoutLt
-    //                   (add_l2(dst, src, zero_tbuf, count) would need a zero
-    //                    tensor; instead use the queue alloc tensor directly and
-    //                    simply enqueue accumLt if the queue accepts VECCALC).
-    //                   Simplest: treat the VECCALC accumLt as the enqueue source
-    //                   and let the downstream DataMovementConversion handle writeback.
-    //   VECCALC (ms=11): accumLt already holds the result; no copy needed.
+    //   GM (ms=0, native vector): emit an explicit VECCALC→GM DataCopy.
+    //   VECOUT (ms=10): enqueue the queue-allocated tensor for the downstream
+    //                    data-movement epilogue.
+    //   VECCALC (ms=11): accumLt already holds the result.
     //
-    // Key insight: the epilogue memref.copy (VECOUT->GM) from memory
-    // realization is converted by DataMovementConversion into a data_copy_l2 with
-    // the correct subview offset, so the concat position is preserved
-    // automatically. We just need to enqueue the result tensor.
-    if (outQueue) {
+    // For VECOUT, the epilogue memref.copy (VECOUT->GM) from memory realization
+    // is converted by DataMovementConversion into a data_copy_l2 with the
+    // correct subview offset, so the concat position is preserved automatically.
+    if (copyVectorResultToGm) {
+      builder.create<PipeBarrierOp>(
+          loc, PipeAttr::get(lowering.mlirCtx, Pipe::PIPE_ALL));
+      Value dstGt =
+          builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, outMemref,
+                                                     /*size=*/Value{});
+      auto copyOp = builder.create<DataCopyL2Op>(loc, dstGt, accumLt,
+                                                 totalElems);
+      lowering.copyAscendCUnitAttr(genOp.getOperation(), copyOp.getOperation());
+    } else if (outQueue) {
       // The queue expects a tensor allocated from the same queue.  Real
       // hardware is stricter than the simulator here; enqueueing a VECCALC
       // tbuf tensor into a VECOUT queue can surface as UB/MTE faults.
