@@ -2404,7 +2404,8 @@ if grep -Fq '<h3>Step Explanation</h3>' "${TMP_DIR}/debug-run-graph/views/debug_
   echo "node inspector should not duplicate the center step explanation" >&2
   exit 1
 fi
-grep -Fq 'selectStageNode(stage, graph, preferred, {neighborhood: shouldRefreshNeighborhood, updateUrl: false})' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'const shouldUpdateRenderedViewUrl = stageGraphViewState.graphViewExplicit || graph.graph_view === "kernel-local";' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'updateUrl: shouldUpdateRenderedViewUrl,' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("contextmenu"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("wheel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'canvas.classList.add("panning")' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -2423,6 +2424,20 @@ if grep -Fq '<strong>${escapeHtml(suspicious)}</strong>suspicious_isolated' "${T
   exit 1
 fi
 grep -Fq 'function renderKernelDag' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderStageKernelAggregateGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderStageKernelLocalGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function isStageKernelBoundaryNode' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function stageKernelAggregateSource' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'kernel_aggregate_source_stage' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'stage-kernel-boundary' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'stage-kernel-aggregate-top-to-bottom' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function enterStageKernelLocalView' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function returnToStageKernelAggregateView' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="kernel-local-back-button"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-stage-graph-view="kernel-aggregate"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-stage-graph-view="kernel-local"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'params.set("graph_view", stageGraphViewState.graphView);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'params.set("kernel", stageGraphViewState.kernelId);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderStagePhaseControls' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq '<h2>Kernel DAG</h2>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
