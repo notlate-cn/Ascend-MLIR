@@ -1231,15 +1231,13 @@ assert by_phase["Kernelize"] == [
     "023-kernelize-role-classification",
     "024-kernelize-final-patterns",
     "030-kernelize-out",
+    "045-kernel-split-out",
 ]
 assert by_phase["Schedule"] == [
     "031-schedule-cleared",
     "032-schedule-decisions",
     "033-schedule-final",
     "040-schedule-out",
-]
-assert by_phase["Kernel Split"] == [
-    "045-kernel-split-out",
 ]
 assert by_phase["Realize"] == [
     "041-realize-planned",
@@ -1341,6 +1339,12 @@ grep -Fq '.timeline-attachment-cell { background: #ffffff; vertical-align: middl
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td class="stage-group-cell" rowspan="5">Kernelize</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<td class="stage-group-cell" rowspan="1">Kernelize</td>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+if grep -Fq '>Kernel Split<' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "full-codegen timeline should keep kernel split under Kernelize" >&2
+  exit 1
+fi
 grep -Fq '<div class="step-file">Dump: 021-kernelize-structured-ops</div>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<div class="step-file">Dump: 030-kernelize-out</div>' "${TMP_DIR}/debug-run-full-codegen/index.html"
@@ -1452,14 +1456,12 @@ assert [group["label"] for group in phase_groups] == [
     "Normalize",
     "Kernelize",
     "Schedule",
-    "Kernel Split",
     "Realize",
     "Translate",
 ]
 translate = next(group for group in phase_groups if group["label"] == "Translate")
 kernelize = next(group for group in phase_groups if group["label"] == "Kernelize")
 schedule = next(group for group in phase_groups if group["label"] == "Schedule")
-kernel_split = next(group for group in phase_groups if group["label"] == "Kernel Split")
 realize = next(group for group in phase_groups if group["label"] == "Realize")
 assert [step["name"] for step in kernelize["steps"]] == [
     "021-kernelize-structured-ops",
@@ -1467,6 +1469,7 @@ assert [step["name"] for step in kernelize["steps"]] == [
     "023-kernelize-role-classification",
     "024-kernelize-final-patterns",
     "030-kernelize-out",
+    "045-kernel-split-out",
 ]
 assert [step["name"] for step in schedule["steps"]] == [
     "031-schedule-cleared",
@@ -1474,15 +1477,12 @@ assert [step["name"] for step in schedule["steps"]] == [
     "033-schedule-final",
     "040-schedule-out",
 ]
+assert kernelize["steps"][5]["step_info"]["title"] == "拆分物理 Kernel"
 assert schedule["steps"][0]["step_info"]["title"] == "清理旧 Schedule 元数据"
 assert schedule["steps"][1]["step_info"]["title"] == "选择 tile 和 tail 方案"
 assert schedule["steps"][2]["step_info"]["title"] == "挂载 Schedule 契约"
 assert schedule["steps"][3]["step_info"]["title"] == "Schedule 输出边界"
 assert schedule["steps"][3]["same_as_previous"]["stage"] == "033-schedule-final"
-assert [step["name"] for step in kernel_split["steps"]] == [
-    "045-kernel-split-out",
-]
-assert kernel_split["steps"][0]["step_info"]["title"] == "拆分物理 Kernel"
 assert [step["name"] for step in realize["steps"]] == [
     "041-realize-planned",
     "042-realize-bufferized",
@@ -2202,8 +2202,8 @@ grep -Fq 'function stageNavigationSequence' "${TMP_DIR}/debug-run-graph/views/de
 grep -Fq 'const paddedOrder = orderText.padStart(3, "0");' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'stageName.startsWith(`${paddedOrder}-`)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '${escapeHtml(stageDiffTitle(diff.from_stage))} -> ${escapeHtml(stageDiffTitle(diff.to_stage))}' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'document.getElementById("graph-title").textContent = stageGraphHeaderTitle(stage);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'document.getElementById("graph-title").textContent = `${stageGraphHeaderTitle(stage)}${viewTitleSuffix}`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel${localSuffix}${sourceSuffix}`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["Stage", stageStageTitle(stage)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["Artifact", stage.path]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'return (stage && stage.step_label) || info.title || (stage && stage.step) || (stage && stage.name) || "stage";' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -2557,7 +2557,7 @@ grep -Fq 'data-workbench-view-href="${escapeHtml(link.href)}"' \
 grep -Fq 'openWorkbenchView(href, title)' \
   "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Kernel 详情' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'stage.stage_view_path' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'detailStage.stage_view_path' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'URLSearchParams' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq '<summary>原始产物</summary>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "unexpected raw artifact drawer in node inspector" >&2

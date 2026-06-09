@@ -9,7 +9,7 @@ from typing import Any
 
 from ascend_debug import layout, stage_graph, timeline_model
 
-PHASE_ORDER = ("Normalize", "Kernelize", "Schedule", "Kernel Split", "Realize", "Translate")
+PHASE_ORDER = ("Normalize", "Kernelize", "Schedule", "Realize", "Translate")
 
 
 def _cell(value: Any) -> str:
@@ -24,10 +24,10 @@ def _infer_stage_phase(name: Any) -> str:
         return "Normalize"
     if "kernelize" in text:
         return "Kernelize"
+    if "kernel-split" in text:
+        return "Kernelize"
     if "schedule" in text:
         return "Schedule"
-    if "kernel-split" in text:
-        return "Kernel Split"
     if "realize" in text:
         return "Realize"
     translate_markers = (

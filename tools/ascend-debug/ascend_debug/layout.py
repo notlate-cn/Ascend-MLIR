@@ -229,7 +229,7 @@ FULL_CODEGEN_STAGES: tuple[StageArtifact, ...] = (
     StageArtifact(32, "032-schedule-decisions", "stages/032-schedule-decisions.mlir", "Schedule", "decisions"),
     StageArtifact(33, "033-schedule-final", "stages/033-schedule-final.mlir", "Schedule", "final"),
     StageArtifact(40, "040-schedule-out", "stages/040-schedule-out.mlir", "Schedule", "ascend-schedule"),
-    StageArtifact(41, "045-kernel-split-out", "stages/045-kernel-split-out.mlir", "Kernel Split", "ascend-kernel-split"),
+    StageArtifact(41, "045-kernel-split-out", "stages/045-kernel-split-out.mlir", "Kernelize", "ascend-kernel-split"),
     StageArtifact(42, "041-realize-planned", "stages/041-realize-planned.mlir", "Realize", "planned"),
     StageArtifact(43, "042-realize-bufferized", "stages/042-realize-bufferized.mlir", "Realize", "bufferized"),
     StageArtifact(44, "043-realize-memory-space-annotated", "stages/043-realize-memory-space-annotated.mlir", "Realize", "memory-space-annotated"),
