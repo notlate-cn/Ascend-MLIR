@@ -388,6 +388,69 @@ bool hasGatherUseOnAxis(const LogicalAxisInfo &axis) {
   return false;
 }
 
+bool isElidableUnitParallelAxis(const LogicalAxisInfo &axis) {
+  return axis.kind == AxisKind::Parallel && axis.staticExtent == 1 &&
+         !hasGatherUseOnAxis(axis);
+}
+
+SmallVector<unsigned> buildAxisRemap(ArrayRef<LogicalAxisInfo> axes) {
+  SmallVector<unsigned> oldToNew(axes.size(), axes.size());
+  unsigned nextAxis = 0;
+  for (const LogicalAxisInfo &axis : axes) {
+    if (axis.logicalAxisId >= oldToNew.size())
+      continue;
+    if (isElidableUnitParallelAxis(axis))
+      continue;
+    oldToNew[axis.logicalAxisId] = nextAxis++;
+  }
+  return oldToNew;
+}
+
+void remapAxisList(SmallVectorImpl<unsigned> &axes,
+                   ArrayRef<unsigned> oldToNew) {
+  SmallVector<unsigned> remapped;
+  remapped.reserve(axes.size());
+  for (unsigned axis : axes) {
+    if (axis >= oldToNew.size() || oldToNew[axis] >= oldToNew.size())
+      continue;
+    remapped.push_back(oldToNew[axis]);
+  }
+  axes = std::move(remapped);
+}
+
+void elideUnitParallelAxes(CoalescedAxisInfo &info) {
+  if (!info.barriers.empty() || info.logicalAxes.empty())
+    return;
+
+  SmallVector<unsigned> oldToNew = buildAxisRemap(info.logicalAxes);
+  bool changed = false;
+  for (auto [oldAxis, newAxis] : llvm::enumerate(oldToNew)) {
+    if (newAxis != oldAxis) {
+      changed = true;
+      break;
+    }
+  }
+  if (!changed)
+    return;
+
+  SmallVector<LogicalAxisInfo> remappedAxes;
+  remappedAxes.reserve(info.logicalAxes.size());
+  for (LogicalAxisInfo axis : info.logicalAxes) {
+    if (axis.logicalAxisId >= oldToNew.size())
+      continue;
+    unsigned newAxis = oldToNew[axis.logicalAxisId];
+    if (newAxis >= oldToNew.size())
+      continue;
+    axis.logicalAxisId = newAxis;
+    remappedAxes.push_back(std::move(axis));
+  }
+
+  info.logicalAxes = std::move(remappedAxes);
+  remapAxisList(info.parallelAxes, oldToNew);
+  remapAxisList(info.reductionAxes, oldToNew);
+  remapAxisList(info.broadcastAxes, oldToNew);
+}
+
 AxisScheduleConstraint *
 lookupAxisScheduleConstraint(CoalescedAxisInfo &info, unsigned logicalAxisId) {
   for (AxisScheduleConstraint &constraint : info.axisScheduleConstraints) {
@@ -705,6 +768,7 @@ coalesceAxes(const KernelPatternView &pattern,
                                   symbolToAxis,
                                   useAxisCarrierOnly ? axisOp : nullptr)))
     return failure();
+  elideUnitParallelAxes(info);
   deriveAxisScheduleConstraints(info);
   deriveAxisCoalescingHints(info);
 

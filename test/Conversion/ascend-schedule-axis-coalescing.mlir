@@ -8,6 +8,7 @@
 // RUN: sed -n '/\/\/ TARGET-GATHER-BEGIN/,/\/\/ TARGET-GATHER-END/p' %s | ascend-mlir-opt --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=TARGETGATHER
 // RUN: sed -n '/\/\/ SYMBOL-GATHER-BEGIN/,/\/\/ SYMBOL-GATHER-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=SYMBOLGATHER
 // RUN: sed -n '/\/\/ POST-REDUCE-BEGIN/,/\/\/ POST-REDUCE-END/p' %s | ascend-mlir-opt --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=POSTREDUCE
+// RUN: sed -n '/\/\/ UNIT-DIM-BEGIN/,/\/\/ UNIT-DIM-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=UNIT
 // RUN: sed -n '/\/\/ CONFLICT-BEGIN/,/\/\/ CONFLICT-END/p' %s | not ascend-mlir-opt --ascend-schedule='target-tile-policy=legacy-default' 2>&1 | FileCheck %s --check-prefix=CONFLICT
 
 // SINGLE-BEGIN
@@ -396,6 +397,45 @@ func.func @manual_reduction_with_singleton_vector_epilogue(
 }
 // POST-REDUCE-END
 
+// UNIT-DIM-BEGIN
+func.func @unit_dim_vector_chain(%arg0: tensor<1x8xf32>,
+                                 %arg1: tensor<1x8xf32>,
+                                 %arg2: tensor<1x8xf32>)
+    -> tensor<1x8xf32> {
+  %empty0 = tensor.empty() : tensor<1x8xf32>
+  %0 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0, %arg1 : tensor<1x8xf32>, tensor<1x8xf32>)
+    outs(%empty0 : tensor<1x8xf32>) {
+  ^bb0(%x: f32, %y: f32, %o: f32):
+    %v = arith.addf %x, %y : f32
+    linalg.yield %v : f32
+  } -> tensor<1x8xf32>
+
+  %empty1 = tensor.empty() : tensor<1x8xf32>
+  %1 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%0, %arg2 : tensor<1x8xf32>, tensor<1x8xf32>)
+    outs(%empty1 : tensor<1x8xf32>) {
+  ^bb0(%x: f32, %y: f32, %o: f32):
+    %v = arith.mulf %x, %y : f32
+    linalg.yield %v : f32
+  } -> tensor<1x8xf32>
+
+  return %1 : tensor<1x8xf32>
+}
+// UNIT-DIM-END
+
 // CONFLICT-BEGIN
 func.func @manual_axis_static_extent_conflict(
     %a4: tensor<4xf32>,
@@ -620,5 +660,25 @@ func.func @manual_axis_static_extent_conflict(
 // POSTREDUCE-NEXT: axis=0 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
 // POSTREDUCE-NEXT: axis=1 kind=reduction roles=[full_reduction] tail=full_extent
 // POSTREDUCE-NEXT: ]
+
+// UNIT: SchedulePatternView:
+// UNIT-NEXT: kernel = kernel_0
+// UNIT-NEXT: ops = 2
+// UNIT-NEXT: primary_ops = 1
+// UNIT-NEXT: dominant_role = vector
+// UNIT: AxisCoalescing:
+// UNIT-NEXT: kernel = kernel_0
+// UNIT-NEXT: logical_axes = 1
+// UNIT-NEXT: parallel_axes = [0]
+// UNIT-NEXT: reduction_axes = []
+// UNIT-NEXT: broadcast_axes = []
+// UNIT-NEXT: barriers = 0
+// UNIT-NEXT: axis_constraints = [
+// UNIT-NEXT: axis=0 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
+// UNIT-NEXT: ]
+// UNIT: ScheduleProblem:
+// UNIT: result_shape = [1, 8]
+// UNIT: tileable_axes = [axis0]
+// UNIT: tile_params = [name=TB_M axis=0 binding=runtime axis_kind=parallel default=8 upper_bound=8 extent=8
 
 // CONFLICT: conflicting static extent for logical axis 0: 4 vs 8
