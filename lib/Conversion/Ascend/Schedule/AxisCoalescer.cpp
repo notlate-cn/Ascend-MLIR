@@ -10,6 +10,7 @@
 #include "Conversion/Ascend/Kernelize/Analysis/SymbolAxisSpace.h"
 #include "KernelPatternView.h"
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
+#include "ScheduleSymbolAxisSpaceCache.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -592,7 +593,9 @@ FailureOr<CoalescedAxisInfo> coalesceTensorConcatAxes(tensor::ConcatOp concatOp)
 
 } // namespace
 
-FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
+FailureOr<CoalescedAxisInfo>
+coalesceAxes(const KernelPatternView &pattern,
+             ScheduleSymbolAxisSpaceCache *symbolAxisCache) {
   const PatternOpView *axisOpView = selectAxisCarrierOp(pattern);
   if (!axisOpView || !axisOpView->op)
     return failure();
@@ -613,17 +616,27 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
       linalgOp.getIteratorTypesArray();
   unsigned axisCount = getAxisCount(axisOp, axisOpView->role,
                                    static_cast<unsigned>(iteratorTypes.size()));
-  std::optional<::mlir::ascend::kernelize::SymbolAxisSpace> symbolAxisSpace;
+  std::optional<::mlir::ascend::kernelize::SymbolAxisSpace>
+      localSymbolAxisSpace;
+  const ::mlir::ascend::kernelize::SymbolAxisSpace *axisSpace = nullptr;
   if (func::FuncOp func = axisOp->getParentOfType<func::FuncOp>()) {
-    FailureOr<::mlir::ascend::kernelize::SymbolAxisSpace> builtSymbolAxes =
-        ::mlir::ascend::kernelize::buildSymbolAxisSpace(func);
-    if (failed(builtSymbolAxes))
-      return failure();
-    if (!builtSymbolAxes->function.axes.empty())
-      symbolAxisSpace = std::move(*builtSymbolAxes);
+    if (symbolAxisCache) {
+      FailureOr<const ::mlir::ascend::kernelize::SymbolAxisSpace *>
+          cachedSymbolAxes = symbolAxisCache->get(func);
+      if (failed(cachedSymbolAxes))
+        return failure();
+      if (!(*cachedSymbolAxes)->function.axes.empty())
+        axisSpace = *cachedSymbolAxes;
+    } else {
+      FailureOr<::mlir::ascend::kernelize::SymbolAxisSpace> builtSymbolAxes =
+          ::mlir::ascend::kernelize::buildSymbolAxisSpace(func);
+      if (failed(builtSymbolAxes))
+        return failure();
+      localSymbolAxisSpace = std::move(*builtSymbolAxes);
+      if (!localSymbolAxisSpace->function.axes.empty())
+        axisSpace = &*localSymbolAxisSpace;
+    }
   }
-  const ::mlir::ascend::kernelize::SymbolAxisSpace *axisSpace =
-      symbolAxisSpace ? &*symbolAxisSpace : nullptr;
   llvm::StringMap<unsigned> symbolToAxis;
   buildSymbolToLogicalAxisMap(axisOp, axisCount, axisSpace, symbolToAxis);
 

@@ -39,6 +39,7 @@ set(ASCEND_SCHEDULE_SOURCES
   Schedule/SchedulePersistentCacheIO.cpp
   Schedule/ScheduleProblemBuilder.cpp
   Schedule/ScheduleSearch.cpp
+  Schedule/ScheduleSymbolAxisSpaceCache.cpp
   Schedule/ScheduleTemplateImplementation.cpp
   Schedule/ScheduleTuningDB.cpp
   Schedule/ScheduleContractDriver.cpp

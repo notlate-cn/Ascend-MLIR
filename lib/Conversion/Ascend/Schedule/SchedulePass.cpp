@@ -14,6 +14,7 @@
 #include "SchedulePersistentCacheIO.h"
 #include "ScheduleProblemBuilder.h"
 #include "ScheduleSearch.h"
+#include "ScheduleSymbolAxisSpaceCache.h"
 #include "ScheduleTuningDB.h"
 #include "ScheduleTypes.h"
 #include "ScheduleContractDriver.h"
@@ -483,6 +484,7 @@ struct AscendSchedulePass
     scheduleCacheModel.seedPersistentTuningSignatures(seededSignatures);
     std::vector<ScheduleDebugEntry> scheduleDebugEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
+    ScheduleSymbolAxisSpaceCache symbolAxisSpaceCache;
     std::optional<ScheduleTargetModelContext> targetModelContext;
     if (StringRef(targetTilePolicy) == kTargetAwareTilePolicyMode) {
       FailureOr<ScheduleTargetModelContext> builtContext =
@@ -502,7 +504,8 @@ struct AscendSchedulePass
     }
 
     for (const KernelPatternView &pattern : *patternViews) {
-      FailureOr<CoalescedAxisInfo> axisInfo = coalesceAxes(pattern);
+      FailureOr<CoalescedAxisInfo> axisInfo =
+          coalesceAxes(pattern, &symbolAxisSpaceCache);
       if (failed(axisInfo)) {
         signalPassFailure();
         return;
@@ -510,7 +513,7 @@ struct AscendSchedulePass
 
       CoalescedAxisInfo axes = std::move(*axisInfo);
       FailureOr<ScheduleProblem> scheduleProblem =
-          buildScheduleProblem(pattern, axes);
+          buildScheduleProblem(pattern, axes, &symbolAxisSpaceCache);
       if (failed(scheduleProblem)) {
         signalPassFailure();
         return;
@@ -625,6 +628,7 @@ struct AscendSchedulePass
         printScheduleDecisionSetReport(entry.decisionSet, llvm::errs());
         printScheduleContractReport(entry.scheduleContractReport, llvm::errs());
       }
+      printSymbolAxisSpaceCacheReport(symbolAxisSpaceCache, llvm::errs());
       printScheduleCacheReport(scheduleCacheModel, llvm::errs());
       emitScheduleReport(reportEntries, llvm::errs());
     }

@@ -10,11 +10,14 @@
 #include "Conversion/Ascend/Kernelize/Analysis/SymbolAxisSpace.h"
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 #include "ScheduleAxisContract.h"
+#include "ScheduleSymbolAxisSpaceCache.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
+
+#include <optional>
 
 using namespace mlir;
 
@@ -91,18 +94,33 @@ void appendShapeConstraints(ArrayRef<int64_t> shape,
   }
 }
 
-void appendSymbolShapeConstraints(Operation *primaryOp,
-                                  SmallVectorImpl<std::string> &constraints) {
+LogicalResult
+appendSymbolShapeConstraints(Operation *primaryOp,
+                             SmallVectorImpl<std::string> &constraints,
+                             ScheduleSymbolAxisSpaceCache *symbolAxisCache) {
   if (!primaryOp)
-    return;
+    return success();
   auto func = primaryOp->getParentOfType<func::FuncOp>();
   if (!func)
-    return;
+    return success();
 
-  FailureOr<::mlir::ascend::kernelize::SymbolAxisSpace> symbolAxes =
-      ::mlir::ascend::kernelize::buildSymbolAxisSpace(func);
-  if (failed(symbolAxes))
-    return;
+  std::optional<::mlir::ascend::kernelize::SymbolAxisSpace>
+      localSymbolAxisSpace;
+  const ::mlir::ascend::kernelize::SymbolAxisSpace *symbolAxes = nullptr;
+  if (symbolAxisCache) {
+    FailureOr<const ::mlir::ascend::kernelize::SymbolAxisSpace *> cached =
+        symbolAxisCache->get(func);
+    if (failed(cached))
+      return failure();
+    symbolAxes = *cached;
+  } else {
+    FailureOr<::mlir::ascend::kernelize::SymbolAxisSpace> built =
+        ::mlir::ascend::kernelize::buildSymbolAxisSpace(func);
+    if (failed(built))
+      return failure();
+    localSymbolAxisSpace = std::move(*built);
+    symbolAxes = &*localSymbolAxisSpace;
+  }
 
   for (const ::mlir::ascend::kernelize::LogicalAxis &axis :
        symbolAxes->function.axes) {
@@ -111,6 +129,7 @@ void appendSymbolShapeConstraints(Operation *primaryOp,
     constraints.push_back((llvm::Twine("dim_equal(") + axis.symbolName + ")")
                               .str());
   }
+  return success();
 }
 
 void appendStructureConstraints(
@@ -210,7 +229,8 @@ bool shouldPrintTailContractFields(
 
 FailureOr<ScheduleProblem>
 buildScheduleProblem(const KernelPatternView &pattern,
-                     const CoalescedAxisInfo &axes) {
+                     const CoalescedAxisInfo &axes,
+                     ScheduleSymbolAxisSpaceCache *symbolAxisCache) {
   const PatternOpView *primaryOpView = selectDominantPrimaryOp(pattern);
   if (!primaryOpView || !primaryOpView->op)
     return failure();
@@ -241,7 +261,7 @@ buildScheduleProblem(const KernelPatternView &pattern,
   llvm::append_range(problem.resultShape, resultType.getShape());
   problem.axes = axes;
   FailureOr<ScheduleAxisContract> axisContract =
-      buildScheduleAxisContract(pattern, axes);
+      buildScheduleAxisContract(pattern, axes, symbolAxisCache);
   if (failed(axisContract))
     return failure();
   problem.axisContract = std::move(*axisContract);
@@ -249,7 +269,9 @@ buildScheduleProblem(const KernelPatternView &pattern,
   appendTemplateTag(problem.dominantRole, problem.templateTags);
   appendContractTemplateTags(pattern, problem.templateTags);
   appendShapeConstraints(problem.resultShape, problem.shapeConstraints);
-  appendSymbolShapeConstraints(primaryOp, problem.shapeConstraints);
+  if (failed(appendSymbolShapeConstraints(primaryOp, problem.shapeConstraints,
+                                          symbolAxisCache)))
+    return failure();
   appendStructureConstraints(pattern, problem.structureConstraints);
   llvm::append_range(problem.structureConstraints,
                      problem.axisContract.propagationConstraints);

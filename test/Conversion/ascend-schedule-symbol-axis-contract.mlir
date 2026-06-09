@@ -42,3 +42,7 @@ func.func @symbol_axis_contract_add_reduce(
 // CHECK:   axis_constraints = [
 // CHECK:     axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail sym=arg0_dim0
 // CHECK:     axis=1 roles=[full_reduction] tail=full_extent sym=arg0_dim1
+// CHECK: SymbolAxisSpaceCache:
+// CHECK-NEXT:   requests = 3
+// CHECK-NEXT:   builds = 1
+// CHECK-NEXT:   hits = 2

@@ -16,9 +16,12 @@
 
 namespace mlir::ascend::schedule {
 
+class ScheduleSymbolAxisSpaceCache;
+
 FailureOr<ScheduleAxisContract>
 buildScheduleAxisContract(const KernelPatternView &pattern,
-                          const CoalescedAxisInfo &axes);
+                          const CoalescedAxisInfo &axes,
+                          ScheduleSymbolAxisSpaceCache *symbolAxisCache = nullptr);
 
 void printScheduleAxisList(ArrayRef<SymbolicAxisRef> axes,
                            llvm::raw_ostream &os);

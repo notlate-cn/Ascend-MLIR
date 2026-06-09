@@ -8,6 +8,7 @@
 
 #include "Conversion/Ascend/Kernelize/Analysis/SymbolAxisSpace.h"
 #include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "ScheduleSymbolAxisSpaceCache.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -340,28 +341,38 @@ LogicalResult appendPropagationConstraints(const KernelPatternView &pattern,
   return appendMultiReductionConstraint(pattern, axes, contract, symbolAxes);
 }
 
-std::optional<::mlir::ascend::kernelize::SymbolAxisSpace>
-buildFunctionSymbolAxisSpace(const KernelPatternView &pattern) {
+FailureOr<const ::mlir::ascend::kernelize::SymbolAxisSpace *>
+getFunctionSymbolAxisSpace(const KernelPatternView &pattern,
+                           ScheduleSymbolAxisSpaceCache *symbolAxisCache,
+                           std::optional<::mlir::ascend::kernelize::
+                                             SymbolAxisSpace> &localStorage) {
   if (pattern.ops.empty())
-    return std::nullopt;
+    return static_cast<const ::mlir::ascend::kernelize::SymbolAxisSpace *>(
+        nullptr);
 
   auto func = pattern.ops.front().op->getParentOfType<func::FuncOp>();
   if (!func)
-    return std::nullopt;
+    return static_cast<const ::mlir::ascend::kernelize::SymbolAxisSpace *>(
+        nullptr);
+
+  if (symbolAxisCache)
+    return symbolAxisCache->get(func);
 
   FailureOr<::mlir::ascend::kernelize::SymbolAxisSpace> symbolAxes =
       ::mlir::ascend::kernelize::buildSymbolAxisSpace(func);
   if (failed(symbolAxes))
-    return std::nullopt;
+    return failure();
 
-  return std::move(*symbolAxes);
+  localStorage = std::move(*symbolAxes);
+  return &*localStorage;
 }
 
 } // namespace
 
 FailureOr<ScheduleAxisContract>
 buildScheduleAxisContract(const KernelPatternView &pattern,
-                          const CoalescedAxisInfo &axes) {
+                          const CoalescedAxisInfo &axes,
+                          ScheduleSymbolAxisSpaceCache *symbolAxisCache) {
   ScheduleAxisContract contract;
   llvm::SmallSet<unsigned, 4> requiredReductionIds;
   for (unsigned logicalAxisId : axes.reductionAxes) {
@@ -382,10 +393,15 @@ buildScheduleAxisContract(const KernelPatternView &pattern,
   }
 
   removeTileableReductionSymbols(contract);
-  std::optional<::mlir::ascend::kernelize::SymbolAxisSpace> symbolAxes =
-      buildFunctionSymbolAxisSpace(pattern);
+  std::optional<::mlir::ascend::kernelize::SymbolAxisSpace>
+      localSymbolAxisSpace;
+  FailureOr<const ::mlir::ascend::kernelize::SymbolAxisSpace *> symbolAxes =
+      getFunctionSymbolAxisSpace(pattern, symbolAxisCache,
+                                 localSymbolAxisSpace);
+  if (failed(symbolAxes))
+    return failure();
   if (failed(appendPropagationConstraints(pattern, axes, contract,
-                                          symbolAxes ? &*symbolAxes : nullptr)))
+                                          *symbolAxes)))
     return failure();
   removeTileableReductionSymbols(contract);
   return contract;

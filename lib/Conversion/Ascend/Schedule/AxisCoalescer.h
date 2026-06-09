@@ -14,7 +14,11 @@
 
 namespace mlir::ascend::schedule {
 
-FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern);
+class ScheduleSymbolAxisSpaceCache;
+
+FailureOr<CoalescedAxisInfo>
+coalesceAxes(const KernelPatternView &pattern,
+             ScheduleSymbolAxisSpaceCache *symbolAxisCache = nullptr);
 
 void printAxisCoalescingReport(StringRef kernelId,
                                const CoalescedAxisInfo &info,
