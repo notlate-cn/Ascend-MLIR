@@ -556,6 +556,7 @@ def _compile_source_case(
     step2 = run_dir / "step2_normalized.mlir"
     step3 = run_dir / "step3_kernelized.mlir"
     step4 = run_dir / "step4_scheduled.mlir"
+    step4_split = run_dir / "step4_kernel_split.mlir"
     step5 = run_dir / "step5_realized.mlir"
     step6 = run_dir / "step6_ascendc.mlir"
     step7 = run_dir / "step7_parallelized.mlir"
@@ -605,6 +606,12 @@ def _compile_source_case(
         ),
         (
             step4,
+            ["--ascend-kernel-split"],
+            step4_split,
+            "045-kernel-split",
+        ),
+        (
+            step4_split,
             ["--ascend-realize=materialization-mode=memory-space-annotate"],
             step5,
             "050-realize",

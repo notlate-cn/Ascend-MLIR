@@ -22,6 +22,7 @@ FULL_CODEGEN_REPORTS = (
     ("normalize", "reports/020-normalize.report.txt"),
     ("kernelize", "reports/030-kernelize.report.txt"),
     ("schedule", "reports/040-schedule.report.txt"),
+    ("kernel-split", "reports/045-kernel-split.report.txt"),
     ("realize", "reports/050-realize.report.txt"),
     ("compute-lower", "reports/060-compute-lower.report.txt"),
     ("parallelize", "reports/070-parallelize.report.txt"),
@@ -960,8 +961,14 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
             ],
         ),
         (
-            "realize",
+            "kernel-split",
             "040-schedule-out",
+            "045-kernel-split-out",
+            ["--ascend-kernel-split"],
+        ),
+        (
+            "realize",
+            "045-kernel-split-out",
             "050-realize-out",
             ["--ascend-realize=" + " ".join(realize_options)],
         ),

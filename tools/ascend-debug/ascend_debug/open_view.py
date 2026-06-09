@@ -176,6 +176,8 @@ def _infer_stage_group_label(name: Any) -> str:
         return "Kernelize"
     if "schedule" in text:
         return "Schedule"
+    if "kernel-split" in text:
+        return "Kernel Split"
     if "realize" in text:
         return "Realize"
     if any(

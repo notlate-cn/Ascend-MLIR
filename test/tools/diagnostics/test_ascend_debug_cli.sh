@@ -909,6 +909,7 @@ assert case["inputs"][0]["dtype"] == "f16"
 assert case["expected_outputs"][0]["dtype"] == "f16"
 PY
 grep -Fq -- 'ascend-mlir-opt' "${TMP_DIR}/fake-source-tools.log"
+grep -Fq -- '--ascend-kernel-split' "${TMP_DIR}/fake-source-tools.log"
 grep -Fq -- 'ascend-mlir-opt '"${TMP_REAL}"'/debug-source-run/step8_kernel_ir.mlir --ascend-canonicalize-cann-signature --canonicalize --cse' \
   "${TMP_DIR}/fake-source-tools.log"
 grep -Fq -- 'ascend-mlir-translate' "${TMP_DIR}/fake-source-tools.log"
@@ -1191,6 +1192,7 @@ test -f "${TMP_DIR}/debug-run-full-codegen/stages/031-schedule-cleared.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/032-schedule-decisions.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/033-schedule-final.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/040-schedule-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/045-kernel-split-out.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/041-realize-planned.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/042-realize-bufferized.mlir"
 test -f "${TMP_DIR}/debug-run-full-codegen/stages/043-realize-memory-space-annotated.mlir"
@@ -1205,6 +1207,7 @@ test -f "${TMP_DIR}/debug-run-full-codegen/tiling_space.json"
 test -f "${TMP_DIR}/debug-run-full-codegen/artifact_manifest.json"
 grep -Fq -- 'debug-dump-dir=' "${TMP_DIR}/fake-full-codegen-tools.log"
 grep -Fq -- '--ascend-schedule=target-tile-policy=target-aware' "${TMP_DIR}/fake-full-codegen-tools.log"
+grep -Fq -- '--ascend-kernel-split' "${TMP_DIR}/fake-full-codegen-tools.log"
 grep -Fq -- '--ascend-realize=materialization-mode=memory-space-annotate' "${TMP_DIR}/fake-full-codegen-tools.log"
 grep -Fq -- 'ascend-mlir-translate' "${TMP_DIR}/fake-full-codegen-tools.log"
 grep -Fq -- '--artifact-manifest-out=artifact_manifest.json' "${TMP_DIR}/fake-full-codegen-tools.log"
@@ -1235,6 +1238,9 @@ assert by_phase["Schedule"] == [
     "033-schedule-final",
     "040-schedule-out",
 ]
+assert by_phase["Kernel Split"] == [
+    "045-kernel-split-out",
+]
 assert by_phase["Realize"] == [
     "041-realize-planned",
     "042-realize-bufferized",
@@ -1247,6 +1253,8 @@ assert "structured/tensor/arith" in stages["021-kernelize-structured-ops"]["step
 assert stages["033-schedule-final"]["step"] == "final"
 assert stages["033-schedule-final"]["step_info"]["title"] == "挂载 Schedule 契约"
 assert "tile_params" in stages["033-schedule-final"]["step_info"]["outputs"]
+assert stages["045-kernel-split-out"]["step"] == "ascend-kernel-split"
+assert stages["045-kernel-split-out"]["step_info"]["title"] == "拆分物理 Kernel"
 assert stages["043-realize-memory-space-annotated"]["step"] == "memory-space-annotated"
 assert stages["043-realize-memory-space-annotated"]["step_info"]["title"] == "标注内存空间"
 assert stages["060-compute-lower-out"]["phase"] == "Translate"
@@ -1444,12 +1452,14 @@ assert [group["label"] for group in phase_groups] == [
     "Normalize",
     "Kernelize",
     "Schedule",
+    "Kernel Split",
     "Realize",
     "Translate",
 ]
 translate = next(group for group in phase_groups if group["label"] == "Translate")
 kernelize = next(group for group in phase_groups if group["label"] == "Kernelize")
 schedule = next(group for group in phase_groups if group["label"] == "Schedule")
+kernel_split = next(group for group in phase_groups if group["label"] == "Kernel Split")
 realize = next(group for group in phase_groups if group["label"] == "Realize")
 assert [step["name"] for step in kernelize["steps"]] == [
     "021-kernelize-structured-ops",
@@ -1469,6 +1479,10 @@ assert schedule["steps"][1]["step_info"]["title"] == "选择 tile 和 tail 方�
 assert schedule["steps"][2]["step_info"]["title"] == "挂载 Schedule 契约"
 assert schedule["steps"][3]["step_info"]["title"] == "Schedule 输出边界"
 assert schedule["steps"][3]["same_as_previous"]["stage"] == "033-schedule-final"
+assert [step["name"] for step in kernel_split["steps"]] == [
+    "045-kernel-split-out",
+]
+assert kernel_split["steps"][0]["step_info"]["title"] == "拆分物理 Kernel"
 assert [step["name"] for step in realize["steps"]] == [
     "041-realize-planned",
     "042-realize-bufferized",
