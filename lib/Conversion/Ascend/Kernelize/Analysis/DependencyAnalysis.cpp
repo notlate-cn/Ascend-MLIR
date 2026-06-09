@@ -313,7 +313,7 @@ void emitDependencyAnalysisReport(raw_ostream &os,
        << (summary.hasOnlyParallelIterators ? "true" : "false") << "\n";
   }
   if (!result.axisSpaces.empty()) {
-    os << "GlobalAxisSpace\n";
+    os << "SymbolAxisSpace\n";
     for (const FunctionAxisSpace &space : result.axisSpaces) {
       auto func = cast<func::FuncOp>(space.func);
       os << "  func = \"" << func.getName() << "\" axes = "

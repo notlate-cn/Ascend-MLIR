@@ -17,7 +17,7 @@ func.func @transpose_preserves_symbol_axes(%arg0: tensor<?x?xf16>,
 }
 
 // CHECK: ScheduleProblem:
-// CHECK: tileable_axes = [arg0_dim1, arg0_dim0]
+// CHECK: tileable_axes = [axis0(sym=arg0_dim1), axis1(sym=arg0_dim0)]
 
 // -----
 
@@ -231,5 +231,5 @@ func.func @softmax_two_reductions_share_tile_axis(%arg0: tensor<?x?xf32>,
 
 // CHECK: ScheduleProblem:
 // CHECK: structure_constraints = [single_reduction_region, multi_reduction_consistent
-// CHECK: tileable_axes = [arg0_dim0]
-// CHECK: required_reduction_axes = [arg0_dim1]
+// CHECK: tileable_axes = [axis0(sym=arg0_dim0)]
+// CHECK: required_reduction_axes = [axis1(sym=arg0_dim1)]

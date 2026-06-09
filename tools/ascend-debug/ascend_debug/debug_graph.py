@@ -1699,7 +1699,7 @@ function functionInfoForNode(node) {
 
 function symbolMemberText(member) {
   if (!member || typeof member !== "object") return semanticValueText(member);
-  const value = member.value !== undefined && member.value !== null ? `value ${member.value}` : "value ?";
+  const value = member.value !== undefined && member.value !== null ? `value_ordinal ${member.value}` : "value_ordinal ?";
   const dim = member.dim !== undefined && member.dim !== null ? `dim ${member.dim}` : "dim ?";
   return `${value} ${dim}`;
 }

@@ -37,8 +37,8 @@ func.func @symbol_axis_contract_add_reduce(
 
 // CHECK: ScheduleProblem:
 // CHECK:   kernel = kernel_0
-// CHECK:   tileable_axes = [arg0_dim0]
-// CHECK:   required_reduction_axes = [arg0_dim1]
+// CHECK:   tileable_axes = [axis0(sym=arg0_dim0)]
+// CHECK:   required_reduction_axes = [axis1(sym=arg0_dim1)]
 // CHECK:   axis_constraints = [
 // CHECK:     axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail sym=arg0_dim0
 // CHECK:     axis=1 roles=[full_reduction] tail=full_extent sym=arg0_dim1

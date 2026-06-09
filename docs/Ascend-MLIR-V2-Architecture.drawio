@@ -54,7 +54,7 @@
         <mxCell id="l2title" value="&lt;b&gt;Layer 2 — Kernelize&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px;color:#E65100'&gt;V2-3 · 自动融合 &amp;amp; Kernel 划分&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontColor=#E65100;" vertex="1" parent="1">
           <mxGeometry x="730" y="155" width="400" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="l2a" value="DependencyAnalyzer&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;ProducerConsumerIndex · GlobalAxisSpace · OpAxisMap&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#E65100;align=center;" vertex="1" parent="1">
+        <mxCell id="l2a" value="DependencyAnalyzer&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;ProducerConsumerIndex · SymbolAxisSpace · OpAxisMap&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#E65100;align=center;" vertex="1" parent="1">
           <mxGeometry x="740" y="230" width="380" height="70" as="geometry" />
         </mxCell>
         <mxCell id="l2b" value="StructuralMarker · OpRoleClassifier&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;Anchor / Reduction / Injective / LayoutTransform / Indexing&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#E65100;align=center;" vertex="1" parent="1">

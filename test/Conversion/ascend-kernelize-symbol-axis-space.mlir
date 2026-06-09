@@ -18,7 +18,7 @@ func.func @kernelize_symbol_axis_space_transpose(
 // PERMUTED-END
 
 // PERMUTED: DependencyAnalysis
-// PERMUTED: GlobalAxisSpace
+// PERMUTED: SymbolAxisSpace
 // PERMUTED-DAG: axis_id = 0 sym = "arg0_dim0" kind = "parallel"
 // PERMUTED-DAG: axis_id = 1 sym = "arg0_dim1" kind = "parallel"
 // PERMUTED: OpAxisMap

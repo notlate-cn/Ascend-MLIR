@@ -6,6 +6,7 @@
 
 #include "ScheduleSearch.h"
 
+#include "ScheduleAxisNaming.h"
 #include "ScheduleCache.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -234,10 +235,6 @@ bool isBoundedParallelVectorTile(const ScheduleProblem &problem,
   return hasBoundedParallelAxis;
 }
 
-std::string getSymbolicTileParamName(StringRef symbolName) {
-  return (llvm::Twine("T_") + symbolName).str();
-}
-
 bool isFullExtentTile(int64_t tileSize, const LogicalAxisInfo &axis) {
   if (ShapedType::isDynamic(tileSize))
     return ShapedType::isDynamic(axis.staticExtent);
@@ -287,7 +284,8 @@ void appendSymbolicTileGuards(const ScheduleProblem &problem,
     if (!isRuntimeTileAxis(constraint))
       continue;
 
-    std::string paramName = getSymbolicTileParamName(axis.symbolName);
+    std::string paramName =
+        getSymbolicTileParamName(problem.axes.logicalAxes, axis);
     ScheduleGuard positiveGuard;
     positiveGuard.kind = GuardKind::PositiveExtent;
     positiveGuard.axisDomain = GuardAxisDomain::LogicalAxis;

@@ -100,51 +100,48 @@ flowchart TD
 
 `resultShape` 的填充方式：对每个 op，遍历其 result tensor 的每个维度 `d`；在 `AscendSymbolConstraintAttr.equivalenceClasses` 中查找包含 `DimRef(result, d)` 的等价类，若命中则 `resultShape[d] = DimExpr(symName)`；若未命中（独立维度）则 `resultShape[d] = DimExpr(sym_<新分配ID>)`；若维度为静态常数则 `resultShape[d] = DimExpr(constantValue)`。
 
-#### 3.3.4 全局逻辑轴空间
+#### 3.3.4 逻辑轴与维度大小符号
 
-**全局逻辑轴空间**（`GlobalAxisSpace`）是第二层在 `DependencyAnalyzer` 完成后一次性建立的轴标识系统，供 `tileableAxes`、`requiredReductionAxes` 等候选级字段使用。它的本质是把 `AscendSymbolConstraintAttr` 的等价类翻译成候选分析可直接索引的轴对象。
+Schedule 层必须区分两类对象：
 
-**数据结构：**
+- **逻辑轴 identity**：kernel / pattern 内的 iterator 轴，使用 `logicalAxisId` 表示，是 `tileableAxes`、`requiredReductionAxes`、`axisScheduleConstraints`、tile/tail plan 的唯一集合键。
+- **维度大小符号**：`AscendSymbolConstraintAttr` 里的 `symName`，表示一组 dim size 等价关系，只能作为 extent/guard/报告信息附着在逻辑轴上，不能作为轴 identity。
+
+当前实现中的对应结构如下：
 
 ```cpp
-struct LogicalAxis {
-  StringAttr   symName;     // 与 AscendSymbolConstraintAttr 中的 symName 一一对应
-  AxisKind     kind;        // Parallel | Reduction | Unknown（分析完成后不应出现 Unknown）
-  int64_t      axisId;      // func 内唯一整数 ID，用于集合操作和 fingerprint
+struct LogicalAxisInfo {
+  unsigned logicalAxisId;        // kernel/pattern 内唯一调度轴 ID
+  AxisKind kind;                 // Parallel | Reduction | Unknown
+  int64_t staticExtent;          // 静态 extent；动态时为 ShapedType::kDynamic
+  std::string symbolName;        // 可选 size symbol，例如 arg0_dim1
+  int64_t symbolClassOrdinal;    // 对应 symbol constraint class ordinal；无则为 -1
 };
-
-// GlobalAxisSpace 是 func 范围内所有 LogicalAxis 的有序集合
-// key: symName（StringAttr），value: LogicalAxis
-using GlobalAxisSpace = DenseMap<StringAttr, LogicalAxis>;
 ```
 
-**建立步骤：**
+`SymbolAxisSpace` 仍是 `ascend.symbol_constraints` 的唯一解析入口，但它提供的是 **size-symbol 空间**，不是最终调度轴空间。`AxisCoalescer` 选择 axis carrier 后，以 carrier 的 iterator/result rank 建立 `CoalescedAxisInfo.logicalAxes`；`SymbolAxisSpace::opAxisMap` 只用于给 logical axis 附上 `symbolName`，以及在 `symbolName` 对当前 pattern 唯一时辅助跨 op 映射。
 
-1. 读取 `func` 上的 `AscendSymbolConstraintAttr`，为每个 `EquivalenceClass` 创建一个 `LogicalAxis`，`symName` 直接复用等价类的 `symName`，`axisId` 按等价类的拓扑出现顺序分配（从 0 开始，稳定且确定）
-2. 对每个 `LogicalAxis`，通过其 `members` 中的任意 `DimRef` 定位到对应 op，查询该 op 的 `iteratorTypes`：若该维度对应的 iterator 类型为 `parallel`，则 `kind = Parallel`；若为 `reduction`，则 `kind = Reduction`
-3. 同一等价类的所有 `DimRef` 在 `iteratorTypes` 上必须一致（`AscendSymbolConstraintAttr` 的 verifier 在 2.3.4 节负责保证这一点）；若出现不一致，`DependencyAnalyzer` 报 `StructuralBarrier` 错误
+**建立与映射规则：**
 
-**轴传播：从 op 局部维度到 LogicalAxis 的映射**
+1. `logicalAxisId` 由 axis carrier 的 iterator/result 轴顺序产生，始终以整数 ID 做集合操作。
+2. 每根 logical axis 可附带一个 `symbolName`，表示该轴 extent 可由某个 size-symbol class 约束。
+3. 若同一个 `symbolName` 出现在多根 logical axis 上，说明这些轴大小相等但轴身份不同。此时不得通过 `symbolName -> axis` 做重映射或去重，只能回退到 raw iterator axis 映射。
+4. 若某个 `symbolName` 在当前 pattern 内唯一，可以作为跨 op / 跨 pattern 诊断的桥接信息，例如 multi-reduction consistency；桥接结果仍必须落回 `logicalAxisId`。
+5. `tileableAxes`、`requiredReductionAxes` 和 `AxisCoalescingHint.members` 全部以 `logicalAxisId` 为 identity。报告格式使用 `axisN(sym=<symbolName>)` 展示二者关系；无 symbol 时显示 `axisN`。
 
-`DependencyAnalyzer` 在建立 `GlobalAxisSpace` 后，为每个 op 建立一张**局部维度 → LogicalAxis** 的映射表 `OpAxisMap`：
+**tile 参数命名规则：**
 
-```cpp
-// op 的第 dimIdx 个 iterator 维度对应哪个 LogicalAxis
-using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
-// OpAxisMap[op][iteratorIdx] = &logicalAxis（或 nullptr 表示静态常数维度）
-```
+- 若 axis 有唯一 `symbolName`，沿用 `T_<symbolName>`，例如 `T_arg0_dim1`。
+- 若多根 axis 共享同一 `symbolName`，tile 参数必须带 `logicalAxisId` 消歧，例如 `T_axis0_arg0_dim0` 与 `T_axis1_arg0_dim0`。
+- 无 symbol 的静态/匿名轴继续使用既有 fallback，如 `TB_M`、`TB_N`、`axisN` 报告名等。
 
-填充方式：对 op 的每个 result，遍历其每个维度 `d`，在 `AscendSymbolConstraintAttr` 中查找 `DimRef(result, d)` 所属的等价类，得到对应 `LogicalAxis`；再通过 op 的 `indexingMaps` 把 result 维度 `d` 反查到 iterator 轴编号 `iteratorIdx`，建立 `OpAxisMap[op][iteratorIdx] = &logicalAxis`。
-
-`linalg.generic` 的 `accessPatternKind = NotApplicable` 的具名 op（如 matmul）：iterator 轴到维度的映射由 op 的 `ContractionOpInterface` 给出，不依赖 indexing map 推导。
-
-**`tileableAxes` 中的轴标识**：`tileableAxes` 的元素类型为 `LogicalAxis*`（指向 `GlobalAxisSpace` 中的条目），不是裸整数。集合操作（交集、并集）基于 `axisId` 做 set 运算。
+**`tileableAxes` 中的轴标识**：`tileableAxes` 的元素是 `logicalAxisId` 所指向的 logical axis，不是 `symName`。集合操作（交集、并集、去重、required-reduction 删除）必须基于 `logicalAxisId`。
 
 **`matmul+add+reduce` 示例**
 
 延续 2.3.4.2 末尾的分析结果，`AscendSymbolConstraintAttr` 已建立三个等价类 M / N / K。
 
-`GlobalAxisSpace` 建立结果：
+逻辑轴空间建立结果：
 
 | axisId | symName | kind | 来源 |
 | ------ | ------- | ---- | ---- |

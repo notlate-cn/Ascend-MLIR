@@ -8,6 +8,7 @@
 
 #include "Conversion/Ascend/Kernelize/Analysis/SymbolAxisSpace.h"
 #include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "ScheduleAxisNaming.h"
 #include "ScheduleSymbolAxisSpaceCache.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -16,7 +17,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 
 #include <algorithm>
@@ -28,16 +28,10 @@ using namespace mlir;
 namespace mlir::ascend::schedule {
 namespace {
 
-std::string getStableAxisName(const LogicalAxisInfo &axis) {
-  if (!axis.symbolName.empty())
-    return axis.symbolName;
-  return (llvm::Twine("axis") + llvm::Twine(axis.logicalAxisId)).str();
-}
-
 SymbolicAxisRef makeAxisRef(const LogicalAxisInfo &axis) {
   SymbolicAxisRef ref;
   ref.logicalAxisId = axis.logicalAxisId;
-  ref.symbolName = getStableAxisName(axis);
+  ref.symbolName = axis.symbolName;
   ref.kind = axis.kind;
   return ref;
 }
@@ -50,39 +44,38 @@ const LogicalAxisInfo *lookupLogicalAxis(const CoalescedAxisInfo &axes,
   return nullptr;
 }
 
-bool hasAxisSymbol(ArrayRef<SymbolicAxisRef> refs, StringRef symbolName) {
+bool hasLogicalAxis(ArrayRef<SymbolicAxisRef> refs, unsigned logicalAxisId) {
   return llvm::any_of(refs, [&](const SymbolicAxisRef &ref) {
-    return ref.symbolName == symbolName;
+    return ref.logicalAxisId == logicalAxisId;
   });
 }
 
 void appendUniqueAxis(SmallVectorImpl<SymbolicAxisRef> &refs,
                       const LogicalAxisInfo &axis) {
   SymbolicAxisRef ref = makeAxisRef(axis);
-  if (hasAxisSymbol(refs, ref.symbolName))
+  if (hasLogicalAxis(refs, ref.logicalAxisId))
     return;
   refs.push_back(std::move(ref));
 }
 
-void removeTileableReductionSymbols(ScheduleAxisContract &contract) {
-  llvm::StringSet<> reductionSymbols;
+void removeTileableReductionAxes(ScheduleAxisContract &contract) {
+  llvm::SmallSet<unsigned, 4> reductionAxisIds;
   for (const SymbolicAxisRef &axis : contract.requiredReductionAxes)
-    reductionSymbols.insert(axis.symbolName);
+    reductionAxisIds.insert(axis.logicalAxisId);
 
   llvm::erase_if(contract.tileableAxes, [&](const SymbolicAxisRef &axis) {
-    return reductionSymbols.contains(axis.symbolName);
+    return reductionAxisIds.contains(axis.logicalAxisId);
   });
 }
 
-void appendRequiredReductionSymbol(ScheduleAxisContract &contract,
-                                   const CoalescedAxisInfo &axes,
-                                   StringRef symbolName) {
-  for (const LogicalAxisInfo &axis : axes.logicalAxes) {
-    if (getStableAxisName(axis) != symbolName)
-      continue;
-    appendUniqueAxis(contract.requiredReductionAxes, axis);
-    return;
-  }
+void appendRequiredReductionAxis(ScheduleAxisContract &contract,
+                                 const CoalescedAxisInfo &axes,
+                                 unsigned logicalAxisId) {
+  for (const LogicalAxisInfo &axis : axes.logicalAxes)
+    if (axis.logicalAxisId == logicalAxisId) {
+      appendUniqueAxis(contract.requiredReductionAxes, axis);
+      return;
+    }
 }
 
 void removeTileableAxis(ScheduleAxisContract &contract, unsigned logicalAxisId) {
@@ -221,36 +214,17 @@ collectConnectedReductionOps(const KernelPatternView &pattern) {
   return reductions;
 }
 
-void sortAndUnique(SmallVectorImpl<std::string> &symbols) {
-  llvm::sort(symbols);
-  symbols.erase(std::unique(symbols.begin(), symbols.end()), symbols.end());
+void sortAndUnique(SmallVectorImpl<unsigned> &axisIds) {
+  llvm::sort(axisIds);
+  axisIds.erase(std::unique(axisIds.begin(), axisIds.end()), axisIds.end());
 }
 
-SmallVector<std::string, 2>
-collectReductionAxisSymbols(
-    linalg::LinalgOp op, const CoalescedAxisInfo &axes,
-    const ::mlir::ascend::kernelize::SymbolAxisSpace *symbolAxes) {
-  SmallVector<std::string, 2> symbols;
+SmallVector<unsigned, 2>
+collectReductionAxisIdsFromRawAxes(linalg::LinalgOp op,
+                                   const CoalescedAxisInfo &axes) {
+  SmallVector<unsigned, 2> axisIds;
   Operation *operation = op.getOperation();
   SmallVector<utils::IteratorType> iteratorTypes = op.getIteratorTypesArray();
-
-  if (symbolAxes) {
-    auto axisIt = symbolAxes->opAxisMap.find(operation);
-    if (axisIt != symbolAxes->opAxisMap.end()) {
-      for (auto [iteratorIdx, iteratorType] : llvm::enumerate(iteratorTypes)) {
-        if (iteratorType != utils::IteratorType::reduction ||
-            iteratorIdx >= axisIt->second.size())
-          continue;
-        const ::mlir::ascend::kernelize::OpAxisRef &axis =
-            axisIt->second[iteratorIdx];
-        if (axis.hasAxis() && !axis.symbolName.empty())
-          symbols.push_back(axis.symbolName);
-      }
-      sortAndUnique(symbols);
-      if (!symbols.empty())
-        return symbols;
-    }
-  }
 
   for (const LogicalAxisInfo &axis : axes.logicalAxes) {
     bool hasReductionUse = false;
@@ -264,10 +238,65 @@ collectReductionAxisSymbols(
     }
     if (!hasReductionUse)
       continue;
-    symbols.push_back(getStableAxisName(axis));
+    axisIds.push_back(axis.logicalAxisId);
   }
-  sortAndUnique(symbols);
-  return symbols;
+  sortAndUnique(axisIds);
+  return axisIds;
+}
+
+std::optional<unsigned>
+lookupUniqueLogicalAxisIdBySymbol(const CoalescedAxisInfo &axes,
+                                  StringRef symbolName) {
+  if (symbolName.empty() ||
+      hasDuplicateAxisSymbol(axes.logicalAxes, symbolName))
+    return std::nullopt;
+
+  for (const LogicalAxisInfo &axis : axes.logicalAxes)
+    if (axis.symbolName == symbolName)
+      return axis.logicalAxisId;
+  return std::nullopt;
+}
+
+SmallVector<unsigned, 2>
+collectReductionAxisIdsFromSymbolSpace(
+    linalg::LinalgOp op, const CoalescedAxisInfo &axes,
+    const ::mlir::ascend::kernelize::SymbolAxisSpace *symbolAxes) {
+  SmallVector<unsigned, 2> axisIds;
+  if (!symbolAxes)
+    return axisIds;
+
+  auto axisIt = symbolAxes->opAxisMap.find(op.getOperation());
+  if (axisIt == symbolAxes->opAxisMap.end())
+    return axisIds;
+
+  SmallVector<utils::IteratorType> iteratorTypes = op.getIteratorTypesArray();
+  for (auto [iteratorIdx, iteratorType] : llvm::enumerate(iteratorTypes)) {
+    if (iteratorType != utils::IteratorType::reduction ||
+        iteratorIdx >= axisIt->second.size())
+      continue;
+
+    const ::mlir::ascend::kernelize::OpAxisRef &axis =
+        axisIt->second[iteratorIdx];
+    if (!axis.hasAxis())
+      continue;
+
+    if (std::optional<unsigned> logicalAxisId =
+            lookupUniqueLogicalAxisIdBySymbol(axes, axis.symbolName))
+      axisIds.push_back(*logicalAxisId);
+  }
+  sortAndUnique(axisIds);
+  return axisIds;
+}
+
+SmallVector<unsigned, 2>
+collectReductionAxisIds(
+    linalg::LinalgOp op, const CoalescedAxisInfo &axes,
+    const ::mlir::ascend::kernelize::SymbolAxisSpace *symbolAxes) {
+  SmallVector<unsigned, 2> axisIds =
+      collectReductionAxisIdsFromRawAxes(op, axes);
+  if (!axisIds.empty())
+    return axisIds;
+  return collectReductionAxisIdsFromSymbolSpace(op, axes, symbolAxes);
 }
 
 LogicalResult appendMultiReductionConstraint(const KernelPatternView &pattern,
@@ -275,21 +304,21 @@ LogicalResult appendMultiReductionConstraint(const KernelPatternView &pattern,
                                              ScheduleAxisContract &contract,
                                              const ::mlir::ascend::kernelize::
                                                  SymbolAxisSpace *symbolAxes) {
-  SmallVector<SmallVector<std::string, 2>, 2> reductionSymbolSets;
+  SmallVector<SmallVector<unsigned, 2>, 2> reductionAxisSets;
   SmallVector<linalg::LinalgOp, 4> reductionOps =
       collectConnectedReductionOps(pattern);
   for (linalg::LinalgOp linalgOp : reductionOps) {
-    SmallVector<std::string, 2> symbols =
-        collectReductionAxisSymbols(linalgOp, axes, symbolAxes);
-    if (!symbols.empty())
-      reductionSymbolSets.push_back(std::move(symbols));
+    SmallVector<unsigned, 2> axisIds =
+        collectReductionAxisIds(linalgOp, axes, symbolAxes);
+    if (!axisIds.empty())
+      reductionAxisSets.push_back(std::move(axisIds));
   }
 
-  if (reductionSymbolSets.size() < 2)
+  if (reductionAxisSets.size() < 2)
     return success();
 
-  ArrayRef<std::string> expected = reductionSymbolSets.front();
-  for (ArrayRef<std::string> candidate : llvm::drop_begin(reductionSymbolSets)) {
+  ArrayRef<unsigned> expected = reductionAxisSets.front();
+  for (ArrayRef<unsigned> candidate : llvm::drop_begin(reductionAxisSets)) {
     if (candidate == expected)
       continue;
     appendUniqueConstraint(contract.propagationConstraints,
@@ -299,8 +328,8 @@ LogicalResult appendMultiReductionConstraint(const KernelPatternView &pattern,
 
   appendUniqueConstraint(contract.propagationConstraints,
                          "multi_reduction_consistent");
-  for (StringRef symbolName : expected)
-    appendRequiredReductionSymbol(contract, axes, symbolName);
+  for (unsigned logicalAxisId : expected)
+    appendRequiredReductionAxis(contract, axes, logicalAxisId);
   return success();
 }
 
@@ -392,7 +421,7 @@ buildScheduleAxisContract(const KernelPatternView &pattern,
     appendUniqueAxis(contract.tileableAxes, *axis);
   }
 
-  removeTileableReductionSymbols(contract);
+  removeTileableReductionAxes(contract);
   std::optional<::mlir::ascend::kernelize::SymbolAxisSpace>
       localSymbolAxisSpace;
   FailureOr<const ::mlir::ascend::kernelize::SymbolAxisSpace *> symbolAxes =
@@ -403,7 +432,7 @@ buildScheduleAxisContract(const KernelPatternView &pattern,
   if (failed(appendPropagationConstraints(pattern, axes, contract,
                                           *symbolAxes)))
     return failure();
-  removeTileableReductionSymbols(contract);
+  removeTileableReductionAxes(contract);
   return contract;
 }
 
@@ -412,7 +441,7 @@ void printScheduleAxisList(ArrayRef<SymbolicAxisRef> axes,
   os << "[";
   llvm::interleaveComma(axes, os,
                         [&](const SymbolicAxisRef &axis) {
-                          os << axis.symbolName;
+                          os << getAxisRefText(axis);
                         });
   os << "]";
 }

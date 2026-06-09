@@ -21,6 +21,7 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 
 #include <algorithm>
@@ -89,30 +90,43 @@ lookupSymbolAxisRef(const ::mlir::ascend::kernelize::SymbolAxisSpace *axisSpace,
   return axis.hasAxis() ? &axis : nullptr;
 }
 
+struct SymbolToLogicalAxisMap {
+  llvm::StringMap<unsigned> uniqueSymbolToAxis;
+  llvm::StringSet<> ambiguousSymbols;
+};
+
 void buildSymbolToLogicalAxisMap(
     Operation *axisOp, unsigned axisCount,
     const ::mlir::ascend::kernelize::SymbolAxisSpace *axisSpace,
-    llvm::StringMap<unsigned> &symbolToAxis) {
+    SymbolToLogicalAxisMap &symbolToAxis) {
   for (unsigned axis = 0; axis < axisCount; ++axis) {
     const ::mlir::ascend::kernelize::OpAxisRef *symbol =
         lookupSymbolAxisRef(axisSpace, axisOp, axis);
-    if (!symbol)
+    if (!symbol || symbol->symbolName.empty())
       continue;
-    symbolToAxis.try_emplace(symbol->symbolName, axis);
+    if (symbolToAxis.ambiguousSymbols.contains(symbol->symbolName))
+      continue;
+
+    auto insertion =
+        symbolToAxis.uniqueSymbolToAxis.try_emplace(symbol->symbolName, axis);
+    if (!insertion.second) {
+      symbolToAxis.uniqueSymbolToAxis.erase(symbol->symbolName);
+      symbolToAxis.ambiguousSymbols.insert(symbol->symbolName);
+    }
   }
 }
 
 std::optional<unsigned> mapRawAxisThroughSymbolSpace(
     Operation *op, unsigned rawAxis,
     const ::mlir::ascend::kernelize::SymbolAxisSpace *axisSpace,
-    const llvm::StringMap<unsigned> &symbolToAxis, unsigned axisCount) {
+    const SymbolToLogicalAxisMap &symbolToAxis, unsigned axisCount) {
   if (rawAxis >= axisCount)
     return std::nullopt;
 
   if (const ::mlir::ascend::kernelize::OpAxisRef *symbol =
           lookupSymbolAxisRef(axisSpace, op, rawAxis)) {
-    auto it = symbolToAxis.find(symbol->symbolName);
-    if (it != symbolToAxis.end())
+    auto it = symbolToAxis.uniqueSymbolToAxis.find(symbol->symbolName);
+    if (it != symbolToAxis.uniqueSymbolToAxis.end())
       return it->second;
   }
 
@@ -180,7 +194,7 @@ LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
                                      CoalescedAxisInfo &info,
                                      const ::mlir::ascend::kernelize::
                                          SymbolAxisSpace *axisSpace,
-                                     const llvm::StringMap<unsigned>
+                                     const SymbolToLogicalAxisMap
                                          &symbolToAxis) {
   Operation *op = linalgOp.getOperation();
   SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMapsArray();
@@ -275,7 +289,7 @@ appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
                      CoalescedAxisInfo &info,
                      const ::mlir::ascend::kernelize::SymbolAxisSpace
                          *axisSpace,
-                     const llvm::StringMap<unsigned> &symbolToAxis,
+                     const SymbolToLogicalAxisMap &symbolToAxis,
                      Operation *axisOnlyOp = nullptr) {
   for (const PatternOpView &opView : pattern.ops) {
     if (axisOnlyOp && opView.op != axisOnlyOp)
@@ -700,7 +714,7 @@ coalesceAxes(const KernelPatternView &pattern,
         axisSpace = &*localSymbolAxisSpace;
     }
   }
-  llvm::StringMap<unsigned> symbolToAxis;
+  SymbolToLogicalAxisMap symbolToAxis;
   buildSymbolToLogicalAxisMap(axisOp, axisCount, axisSpace, symbolToAxis);
 
   SmallVector<int64_t> staticExtents(axisCount, ShapedType::kDynamic);

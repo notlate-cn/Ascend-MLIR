@@ -10,7 +10,7 @@ constraints later in Schedule. That is not equivalent to the design:
 - Dynamic ranked tensor dimensions that are equal by IR structure are not
   recorded.
 - Kernelize cannot build `OpSemanticSummary.resultShape` as `DimExpr`.
-- Kernelize cannot build `GlobalAxisSpace` or `OpAxisMap` from proven shape
+- Kernelize cannot build `SymbolAxisSpace` or `OpAxisMap` from proven shape
   identity.
 - Schedule cannot turn proven equal dimensions into
   `ShapeConstraint::DimEquality`.
@@ -31,7 +31,7 @@ This implementation follows the V2 documents as the source of truth:
 - V2-2 section 2.6: `EntryNormalizationVerifier` must check symbol constraint
   completeness before Layer 2.
 - V2-3 sections 3.3.3-3.3.4: Kernelize derives `OpSemanticSummary.resultShape`,
-  `GlobalAxisSpace`, and `OpAxisMap` from the attr.
+  `SymbolAxisSpace`, and `OpAxisMap` from the attr.
 - V2-4 section 4.4.6: Schedule reads the attr and lifts proven equal dimensions
   to `ShapeConstraint::DimEquality`.
 
@@ -213,7 +213,9 @@ Layer 1 owns proving equality. Later layers are consumers:
 
 - Kernelize fills `OpSemanticSummary.resultShape` by looking up each result
   `DimRef` in the attr and producing a `DimExpr`.
-- Kernelize builds `GlobalAxisSpace` and `OpAxisMap` from equivalence classes.
+- Kernelize builds `SymbolAxisSpace` and `OpAxisMap` from equivalence classes.
+  `SymbolAxisSpace` is the size-symbol/equivalence space; Schedule must keep
+  logical axis identity separately by `logicalAxisId`.
 - AxisCoalescer uses the attr to prove logical extent equivalence.
 - ScheduleProblemBuilder lifts attr pairs into
   `ShapeConstraint::DimEquality`.

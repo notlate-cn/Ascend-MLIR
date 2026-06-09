@@ -6,6 +6,8 @@
 
 #include "ScheduleDecision.h"
 
+#include "ScheduleAxisNaming.h"
+
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -133,9 +135,10 @@ void addPrimitiveUse(SmallVectorImpl<PrimitiveAxisUseKind> &uses,
 std::string defaultTileParamName(const ScheduleProblem &problem,
                                  unsigned tileIndex) {
   if (tileIndex < problem.axes.logicalAxes.size()) {
-    StringRef symbolName = problem.axes.logicalAxes[tileIndex].symbolName;
-    if (!symbolName.empty())
-      return (llvm::Twine("T_") + symbolName).str();
+    std::string symbolParamName = getSymbolicTileParamName(
+        problem.axes.logicalAxes, problem.axes.logicalAxes[tileIndex]);
+    if (!symbolParamName.empty())
+      return symbolParamName;
   }
 
   if (problem.dominantRole == OpRole::Cube && tileIndex == 2)

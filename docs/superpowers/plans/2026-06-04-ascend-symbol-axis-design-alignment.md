@@ -13,9 +13,9 @@
 ## File Structure
 
 - Create `lib/Conversion/Ascend/Schedule/ScheduleAxisContract.h`
-  - Owns candidate-level `tileableAxes`, `requiredReductionAxes`, and propagation diagnostics derived from `CoalescedAxisInfo` plus symbol axis identity.
+  - Owns candidate-level `tileableAxes`, `requiredReductionAxes`, and propagation diagnostics derived from `CoalescedAxisInfo` logical axis identity plus optional size symbols.
 - Create `lib/Conversion/Ascend/Schedule/ScheduleAxisContract.cpp`
-  - Implements symbol-axis set construction, role-aware propagation filtering, and report formatting helpers.
+  - Implements logical-axis set construction, role-aware propagation filtering, and report formatting helpers that keep axis IDs separate from size symbols.
 - Modify `lib/Conversion/Ascend/Schedule/ScheduleTypes.h`
   - Adds `AxisSet`, `ScheduleAxisContract`, `SymbolicTileParamSpec`, and symbol names on `ScheduleTileParam` if not already carried through.
 - Modify `lib/Conversion/Ascend/Schedule/ScheduleProblemBuilder.cpp`
@@ -93,8 +93,8 @@ func.func @symbol_axis_contract_add_reduce(
 
 // CHECK: ScheduleProblem:
 // CHECK:   kernel = kernel_0
-// CHECK:   tileable_axes = [arg0_dim0]
-// CHECK:   required_reduction_axes = [arg0_dim1]
+// CHECK:   tileable_axes = [axis0(sym=arg0_dim0)]
+// CHECK:   required_reduction_axes = [axis1(sym=arg0_dim1)]
 // CHECK:   axis_constraints = [
 // CHECK:     axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail sym=arg0_dim0
 // CHECK:     axis=1 roles=[full_reduction] tail=full_extent sym=arg0_dim1
@@ -149,8 +149,8 @@ Create `ScheduleAxisContract.cpp` with these initial rules:
 - Seed from `axes.logicalAxes`.
 - Parallel axes enter `tileableAxes`.
 - Reduction axes enter `requiredReductionAxes`.
-- If the same symbol appears as reduction anywhere in the pattern, remove it from `tileableAxes` and keep it in `requiredReductionAxes`.
-- Use `symbolName` when present, otherwise use `axis<logicalAxisId>` for report stability.
+- If the same logical axis appears as reduction anywhere in the pattern, remove that `logicalAxisId` from `tileableAxes` and keep it in `requiredReductionAxes`.
+- Report axis identity as `axis<logicalAxisId>` and attach `symbolName` as `sym=<symbolName>` / `axisN(sym=<symbolName>)`; do not use `symbolName` as the axis key.
 
 - [ ] **Step 5: Wire the builder and report**
 
@@ -342,7 +342,7 @@ Run:
 ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && source examples/env.sh >/tmp/ascend_env.log && LLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v test/Conversion/ascend-schedule-symbolic-search-space.mlir'
 ```
 
-Expected: `FAIL`; tile params use `TB_M/TB_N` and guards use `d0/d1` or `a0/a1`, not `T_<symbol>`.
+Expected: `FAIL`; tile params use `TB_M/TB_N` and guards use `d0/d1` or `a0/a1`, not symbol-aware tile params such as `T_arg0_dim0`.
 
 - [ ] **Step 3: Extend tile param naming**
 
@@ -437,7 +437,7 @@ func.func @transpose_preserves_symbol_axes(%arg0: tensor<?x?xf16>,
 }
 
 // CHECK-LABEL: func.func @transpose_preserves_symbol_axes
-// CHECK: tileable_axes = [arg0_dim1, arg0_dim0]
+// CHECK: tileable_axes = [axis0(sym=arg0_dim1), axis1(sym=arg0_dim0)]
 
 // -----
 
@@ -519,8 +519,8 @@ func.func @softmax_two_reductions_share_tile_axis(%arg0: tensor<?x?xf32>,
 }
 
 // CHECK-LABEL: func.func @softmax_two_reductions_share_tile_axis
-// CHECK: tileable_axes = [arg0_dim0]
-// CHECK: required_reduction_axes = [arg0_dim1]
+// CHECK: tileable_axes = [axis0(sym=arg0_dim0)]
+// CHECK: required_reduction_axes = [axis1(sym=arg0_dim1)]
 ```
 
 - [ ] **Step 2: Run RED on xvm**
@@ -537,7 +537,7 @@ Expected: `FAIL` on at least concat/reshape/softmax checks, because current prop
 
 In `AxisCoalescer.cpp`, keep the current linalg indexing map path, but for projection/permutation maps:
 - Accept affine dim permutation maps.
-- Use `SymbolAxisSpace::opAxisMap` first.
+- Use `SymbolAxisSpace::opAxisMap` only when the referenced `symbolName` maps to a unique logical axis in the current pattern; duplicate symbols must fall back to raw iterator axis mapping.
 - Fall back to raw-axis map only when the symbol map has no entry.
 
 - [ ] **Step 4: Add view-like static bridge propagation**
@@ -667,7 +667,7 @@ git commit -m "test: guard symbol axis schedule architecture"
 - The goal is not complete until all four design blocks are implemented and verified in current state.
 - Evidence required:
   - `ScheduleProblem` report contains `tileable_axes`, `required_reduction_axes`, and symbol-derived `dim_equal(...)` constraints for dynamic symbol tests.
-  - `ScheduleSearch` report and `ScheduleDecisionSet` expose `T_<symbol>` tile params and symbol-aware guards.
+  - `ScheduleSearch` report and `ScheduleDecisionSet` expose `T_<symbol>` tile params and symbol-aware guards; duplicate `symbolName` cases use `T_axis<logicalAxisId>_<symbol>` to keep tile params unique.
   - Complex propagation lit covers transpose, reshape, concat, branch/merge, and multi-reduction softmax behavior.
   - Architecture guard proves Schedule does not locally parse `ascend.symbol_constraints`.
   - xvm focused build, focused conversion lit, and gtests pass.
