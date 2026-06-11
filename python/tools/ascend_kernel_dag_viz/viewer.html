@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ascend_kernel_dag_viz</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #app { display: flex; height: 100vh; }
+  #cy { flex: 1; min-width: 0; background: #fafafa; }
+  #sidebar {
+    width: 380px; padding: 12px 16px;
+    background: #fff; border-left: 1px solid #ddd;
+    overflow-y: auto; font-size: 13px;
+  }
+  h1 { margin: 0 0 8px; font-size: 18px; }
+  h2 { margin: 16px 0 4px; font-size: 14px; color: #444; }
+  .hint { color: #888; font-size: 12px; }
+  pre { background: #f4f4f4; padding: 6px 8px; border-radius: 3px;
+        font-size: 11px; overflow-x: auto; white-space: pre-wrap; }
+  .pill { display: inline-block; padding: 2px 6px; margin-right: 4px;
+          border-radius: 3px; font-size: 11px;
+          background: #eee; border: 1px solid #ccc; }
+  .pill.ascendc { background: #d8e8ff; border-color: #6699cc; }
+  .pill.aclnn   { background: #ffe5cc; border-color: #cc9966; }
+  .pill.input   { background: #e8f5e0; border-color: #88b066; }
+  .pill.output  { background: #f5e0e0; border-color: #b06666; }
+  table.kv { width: 100%; border-collapse: collapse; }
+  table.kv td { padding: 2px 6px; vertical-align: top; }
+  table.kv td:first-child { color: #666; width: 110px; }
+  ul.ops { padding-left: 16px; margin: 4px 0; }
+  ul.ops li { margin: 2px 0; font-size: 12px; }
+  .role { display: inline-block; padding: 1px 5px; margin-right: 4px;
+          background: #ffeecc; border-radius: 3px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="cy"></div>
+  <div id="sidebar">
+    <h1>kernel DAG</h1>
+    <div class="hint" id="meta">Loading dag.json...</div>
+    <div id="detail">
+      <p class="hint">Click a node to inspect.</p>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+<script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+<script>
+(async function () {
+  const res = await fetch('dag.json');
+  if (!res.ok) {
+    document.getElementById('meta').textContent = "fetch dag.json failed: " + res.status;
+    return;
+  }
+  const dag = await res.json();
+  document.getElementById('meta').innerHTML =
+    `function: <b>${dag.function ?? '?'}</b>` +
+    ` &middot; nodes: ${dag.nodes.length} &middot; edges: ${dag.edges.length}`;
+
+  const nodeMap = new Map(dag.nodes.map(n => [n.id, n]));
+
+  const colorByKind = {
+    'ascendc': '#d8e8ff',
+    'aclnn':   '#ffe5cc',
+    'input':   '#e8f5e0',
+    'output':  '#f5e0e0',
+  };
+  const borderByKind = {
+    'ascendc': '#6699cc',
+    'aclnn':   '#cc9966',
+    'input':   '#88b066',
+    'output':  '#b06666',
+  };
+
+  const cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: [
+      ...dag.nodes.map(n => ({ data: {
+        id: n.id, label: n.label, kind: n.kind,
+      }})),
+      ...dag.edges.map(e => ({ data: {
+        id: e.id, source: e.source, target: e.target, label: e.label || '',
+      }})),
+    ],
+    style: [
+      { selector: 'node', style: {
+          'background-color': ele => colorByKind[ele.data('kind')] || '#eee',
+          'border-color':     ele => borderByKind[ele.data('kind')] || '#888',
+          'border-width': 1.5,
+          'label': 'data(label)',
+          'text-wrap': 'wrap',
+          'text-valign': 'center',
+          'text-halign': 'center',
+          'font-size': 11,
+          'padding': '8px',
+          'shape': ele => {
+            const k = ele.data('kind');
+            return (k === 'input' || k === 'output') ? 'round-rectangle' : 'roundrectangle';
+          },
+          'width': 'label', 'height': 'label',
+      }},
+      { selector: 'node:selected', style: {
+          'border-width': 3, 'border-color': '#222',
+      }},
+      { selector: 'edge', style: {
+          'curve-style': 'bezier',
+          'target-arrow-shape': 'triangle',
+          'arrow-scale': 0.8,
+          'line-color': '#888',
+          'target-arrow-color': '#888',
+          'width': 1,
+          'label': 'data(label)',
+          'font-size': 9,
+          'color': '#666',
+          'text-background-color': '#fff',
+          'text-background-opacity': 1,
+          'text-background-padding': 1,
+      }},
+    ],
+    layout: { name: 'dagre', rankDir: 'TB', nodeSep: 30, rankSep: 50 },
+  });
+
+  function renderNode(n) {
+    const detail = document.getElementById('detail');
+    if (!n) {
+      detail.innerHTML = '<p class="hint">Click a node to inspect.</p>';
+      return;
+    }
+    let html = `<span class="pill ${n.kind}">${n.kind}</span>`;
+    html += `<b style="font-size:14px">${n.id}</b>`;
+    html += '<table class="kv">';
+    if (n.summary) html += `<tr><td>summary</td><td><b>${n.summary}</b></td></tr>`;
+    if (n.aclnn_op) html += `<tr><td>aclnn op</td><td>${n.aclnn_op}</td></tr>`;
+    if (n.shape) html += `<tr><td>shape</td><td>${JSON.stringify(n.shape)} ${n.dtype || ''}</td></tr>`;
+    html += '</table>';
+    if (n.results && n.results.length) {
+      html += '<h2>results</h2><ul class="ops">';
+      for (const r of n.results) {
+        html += `<li>${r.name} <span class="hint">${JSON.stringify(r.shape)} ${r.dtype}</span></li>`;
+      }
+      html += '</ul>';
+    }
+    if (n.source_ops && n.source_ops.length) {
+      html += '<h2>source ops</h2><ul class="ops">';
+      for (const so of n.source_ops) {
+        html += `<li><span class="role">${so.op_role}</span><code>${so.id}</code> ${so.name}`;
+        if (so.loc) html += `<div class="hint" style="margin-left:14px">${so.loc}</div>`;
+        html += '</li>';
+      }
+      html += '</ul>';
+    }
+    if (n.boundary_source_ops && n.boundary_source_ops.length) {
+      html += '<h2>boundary</h2><ul class="ops">';
+      for (const b of n.boundary_source_ops) {
+        html += `<li>result_${b.result_index} ← <code>${b.source_op_id}</code></li>`;
+      }
+      html += '</ul>';
+    }
+    if (n.output_checkpoint_hint && n.output_checkpoint_hint.length) {
+      html += '<h2>checkpoint hints</h2><pre>' +
+              n.output_checkpoint_hint.join('\n') + '</pre>';
+    }
+    detail.innerHTML = html;
+  }
+
+  cy.on('tap', 'node', evt => renderNode(nodeMap.get(evt.target.id())));
+  cy.on('tap', evt => { if (evt.target === cy) renderNode(null); });
+})();
+</script>
+</body>
+</html>

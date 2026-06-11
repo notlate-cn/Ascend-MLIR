@@ -97,6 +97,7 @@ config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.afir_obj_root, 'test')
 
 # Tweak the PATH to include the tools dir.
+lit.llvm.llvm_config.with_environment('PATH', config.afir_tools_dir, append_path=True)
 lit.llvm.llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
 
 if config.enable_bindings_python:
@@ -116,6 +117,7 @@ if not config.enable_bindings_python or config.enable_bindings_python == "false"
 
 tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [
+    'aclnn-backend',
     'afir-opt',
     'afir-translate',
     ToolSubst('%PYTHON', config.python_executable, unresolved='ignore'),

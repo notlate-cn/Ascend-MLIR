@@ -1,5 +1,6 @@
 add_mlir_library(AscendCBufferPlacementConversion
   AscendCBufferPlacementPass.cpp
+  BufferPlacementCopyInsert.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion

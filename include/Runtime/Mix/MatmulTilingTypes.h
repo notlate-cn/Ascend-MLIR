@@ -10,7 +10,7 @@
 namespace mlir::runtime {
 
 enum class MatmulLayout { ND, NZ };
-enum class EpilogueKind { None, BiasAdd, BiasAddRelu, BiasAddLeakyRelu };
+enum class EpilogueKind { None, BiasAdd, BiasAddRelu, BiasAddLeakyRelu, Relu };
 enum class MatrixTraverseKind { FirstM, FirstN };
 
 struct MatmulProblemDesc {

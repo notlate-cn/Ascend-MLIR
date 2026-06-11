@@ -164,6 +164,7 @@ def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
   let constructor = "mlir::afir::createLinalgToAscendCPass()";
   let dependentDialects = [
     "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
     "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect",
     "mlir::linalg::LinalgDialect"
@@ -230,6 +231,100 @@ def AscendCPrepareForEmitPass : Pass<"ascendc-prepare-for-emit", "mlir::func::Fu
 }
 
 //===----------------------------------------------------------------------===//
+// AscendC Prepare For Emit — refactored sub-passes
+//===----------------------------------------------------------------------===//
+
+def AscendCFlattenGMPtrPass : Pass<"ascendc-flatten-gm-ptr", "mlir::func::FuncOp"> {
+  let summary = "Promote GM allocs to func args and flatten subview chains for set_global_buffer";
+  let description = [{
+    Runs before PackTilingData so memref.dim values are still available as
+    plain IR ops (not yet packed into TilingData).
+
+    Transformations:
+      1. Promote every top-level memref.alloc with memory_space=0 (GM) to a
+         new function block argument.
+      2. Replace each ascendc.global_tensor.set_global_buffer whose buffer is a
+         memref.subview chain with a flat-pointer + integer offset form using
+         emitasc.reinterpret_cast + emitasc.ptr_offset.
+      3. Replace GM->GM memref.copy ops with a verbatim memmove call.
+  }];
+  let constructor = "mlir::afir::createAscendCFlattenGMPtrPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+def AscendCPackTilingDataPass : Pass<"ascendc-pack-tiling-data", "mlir::func::FuncOp"> {
+  let summary = "Pack index/i64 tiling args and memref.dim uses into a TilingData GM struct";
+  let description = [{
+    Reads auto_fuse.tiling_infos on the parent ModuleOp to discover named
+    tiling parameters (e.g. XBLOCK, XBLOCK_SUB).  Fails if tiling_infos is
+    absent — no Phase A positional fallback.
+
+    Transformations:
+      1. Collect tiling arg names/indices from auto_fuse.tiling_infos.
+      2. Scan for memref.dim %blockArg, %cI ops; each unique (arg, dim) pair
+         becomes a dim_argN_D field in TilingData.
+      3. Inject a new TilingData GM pointer block argument, emit
+         emitasc.copy_struct + emitasc.member to extract every field.
+      4. Replace all tiling arg uses and memref.dim uses with the extracted
+         values; erase the original args.
+      5. Emit emitasc.declare_py_struct at module scope.
+  }];
+  let constructor = "mlir::afir::createAscendCPackTilingDataPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
+def AscendCDecomposeMultiAxisBroadcastPass
+    : Pass<"ascendc-decompose-multi-axis-broadcast", "mlir::func::FuncOp"> {
+  let summary = "Decompose multi-axis ascendc.broadcast_l2 into a chain of single-axis ones";
+  let description = [{
+    AscendC::Broadcast template only supports a single broadcast axis per call.
+    A linalg::generic with an indexing map that drops multiple iteration dims
+    (e.g. (d0,d1,d2) -> (d1) projecting away d0 and d2) lowers to a single
+    BroadcastL2Op whose srcShape contains a constant 1 in every dropped slot.
+
+    This pass walks each BroadcastL2Op, identifies the broadcast axes (where
+    srcShape[i] is statically 1 and dstShape[i] is not), and if there are 2+
+    axes, replaces the op with a chain of single-axis BroadcastL2Ops separated
+    by intermediate VECCALC tiles allocated via TBufOp + TPipeInitBufferOp.
+    The last broadcast in the chain writes to the original op's dst so that
+    downstream users observe the same final tensor.
+  }];
+  let constructor = "mlir::afir::createAscendCDecomposeMultiAxisBroadcastPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
+def AscendCFinalizeKernelPass : Pass<"ascendc-finalize-kernel", "mlir::func::FuncOp"> {
+  let summary = "Stamp kernel attributes, strip return values, lower affine.min";
+  let description = [{
+    Final cleanup before ascir-translate:
+      1. Set {ascendc.aicore, ascendc.global} attributes.
+      2. Replace func.return with operands by a void func.return.
+      3. Lower affine.min -> arith.minsi (ascir-translate has no affine support).
+  }];
+  let constructor = "mlir::afir::createAscendCFinalizeKernelPass()";
+  let dependentDialects = [
+    "mlir::affine::AffineDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // CanonicalizeCannSignature
 //===----------------------------------------------------------------------===//
 
@@ -248,6 +343,43 @@ def CanonicalizeCannSignaturePass : Pass<"canonicalize-cann-signature", "mlir::M
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::emitasc::EmitAscDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// AscendCRCoreCombine
+//===----------------------------------------------------------------------===//
+
+def AscendCRCoreCombinePass : Pass<"ascendc-rcore-combine", "mlir::ModuleOp"> {
+  let summary = "Insert cross-core SyncAll + block-0 combine for RCore reduce kernels";
+  let description = [{
+    For kernels with `afir.reduce_template = "RCore"` (multi-core full-reduce,
+    no parallel axis), the per-core accumulator → GM output write races on the
+    same scalar slot.  This pass rewrites that final write into the AF kRCore
+    two-segment pattern (same `__aicore__` kernel, separated by SyncAll):
+
+      segment 1 (per core):
+        accumulator = reduce(x[block_idx * XBLOCK : (block_idx+1) * XBLOCK])
+        DataCopy(workspace + block_idx * sizeof(elem), accumulator, 1)
+      SyncAllHard()
+      segment 2 (block_idx == 0):
+        DataCopy(vecin, workspace + 0, block_dim)   // read all partials
+        reduce_sum_2d_l2(combined, vecin)            // sum block_dim slots
+        DataCopy(out_gm, combined, 1)                // write final
+
+    Runs after `canonicalize-cann-signature` so the workspace `memref<ui8>` arg
+    is already in place.  Other reduce templates (Common, FullLoad) are
+    skipped — their per-core writes target distinct output slots and don't
+    race.
+  }];
+  let constructor = "mlir::afir::createAscendCRCoreCombinePass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::func::FuncDialect",
     "mlir::memref::MemRefDialect"
   ];
 }
@@ -354,6 +486,395 @@ def AnnotateMixMatmulSemanticsPass : Pass<"annotate-mix-matmul-semantics", "mlir
     "mlir::arith::ArithDialect",
     "mlir::scf::SCFDialect"
   ];
+}
+
+//===----------------------------------------------------------------------===//
+// AutoFuse Passes
+//===----------------------------------------------------------------------===//
+
+def AutoFuseGroupAnalysis : Pass<"auto-fuse-group-analysis", "mlir::func::FuncOp"> {
+  let summary = "Analyze linalg ops and annotate fusion groups";
+  let constructor = "mlir::afir::createAutoFuseGroupAnalysisPass()";
+  let options = [
+    Option<"enableReductionSplit",     "enable-reduction-split",      "bool",    "false", "">,
+    Option<"maxReduceEpilogueOps",     "max-reduce-epilogue-ops",     "int32_t", "3",     "">,
+    Option<"maxHorizontalExtraInputs", "max-horizontal-extra-inputs", "int32_t", "4",     "">,
+    Option<"disableCubeFusion",        "disable-cube-fusion",         "bool",    "false",
+           "Keep matmul/batch_matmul ops as standalone groups (no Cube+Vector "
+           "epilogue fusion) so they can be routed to the aclnn matmul fallback">,
+  ];
+  // Arith + Tensor are created by the step-0 pre-passes: const-fold-transpose
+  // builds a new arith.constant, and unshare-empty clones tensor.empty.
+  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::func::FuncDialect",
+                           "mlir::arith::ArithDialect", "mlir::tensor::TensorDialect"];
+}
+
+def AutoFuseGroupOutline : Pass<"auto-fuse-group-outline", "mlir::ModuleOp"> {
+  let summary = "Outline annotated fusion groups into kernel funcs";
+  let constructor = "mlir::afir::createAutoFuseGroupOutlinePass()";
+  let options = [
+    Option<"kernelFuncPrefix",   "kernel-func-prefix",   "std::string", "\"kernel_group\"", "">,
+    Option<"outputDir",          "output-dir",           "std::string", "\"\"",             "">,
+    Option<"enableRCoreSplit",   "enable-rcore-split",   "bool",        "true",
+           "Run auto-fuse-split-rcore-group between outline + file emit">,
+    Option<"rcoreParallelSlots", "rcore-parallel-slots", "int64_t",     "16",
+           "Target N for RCore split (largest divisor of R ≤ this); 16 keeps fp16 partial output ≥ 32-byte aligned for DataCopy">,
+  ];
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::linalg::LinalgDialect"];
+}
+
+def AutoFuseTileFuse : Pass<"auto-fuse-tile-fuse", "mlir::ModuleOp"> {
+  let summary = "Tile and fuse kernel group funcs (multi-variant codegen, P1b)";
+  let constructor = "mlir::afir::createAutoFuseTileFusePass()";
+  let options = [
+    Option<"enableCollapse",       "enable-collapse",        "bool",    "true",  "">,
+    Option<"enableReductionSplit", "enable-reduction-split", "bool",    "false", "">,
+    Option<"enableTilingVariants", "enable-tiling-variants", "bool",    "true",
+           "P1b: emit one func per feasible TilePlanDraft (kernel_<name>__v<i>); "
+           "when false, fall back to single-variant pickBest behavior (legacy).">,
+    Option<"relaxNonBlockUbY",     "relax-non-block-uby",    "bool",    "true",
+           "P6: when true, non-block ub-Y drafts pass the feasibility filter "
+           "with a soft penalty so the autotuner can profile them as separate "
+           "variants. No effect if enable-tiling-variants is false.">,
+    Option<"hwMatmulMAlign",       "hw-matmul-m-align",      "int64_t", "16",    "">,
+    Option<"hwMatmulNAlign",       "hw-matmul-n-align",      "int64_t", "16",    "">,
+    Option<"hwMatmulKAlign",       "hw-matmul-k-align",      "int64_t", "16",    "">,
+    Option<"l0aCapacityBytes",     "l0a-capacity-bytes",     "int64_t", "65536", "">,
+    Option<"soc",                  "soc",                    "std::string",
+           "\"Ascend910B1\"",
+           "Target SoC name (used by costEstimate to look up the UB pool "
+           "size and #AI cores from SocSpec). Default: Ascend910B1.">,
+  ];
+  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect", "mlir::bufferization::BufferizationDialect"];
+}
+
+def AutoFuseVerifyTilingInfoSchema : Pass<"auto-fuse-verify-tiling-info-schema", "mlir::func::FuncOp"> {
+  let summary = "Verify auto_fuse.tiling_infos schema internal + IR consistency";
+  let constructor = "mlir::afir::createAutoFuseVerifyTilingInfoSchemaPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::memref::MemRefDialect"];
+}
+
+def AutoFuseSplitRCoreGroup : Pass<"auto-fuse-split-rcore-group", "mlir::ModuleOp"> {
+  let summary = "Split a full-reduce private kernel into partial+combine kernels (RCore)";
+  let description = [{
+    Runs after auto-fuse-group-outline.  For each private kernel func whose
+    body is a single linalg.generic with ALL iterator types = reduction (true
+    full-reduce, output rank 0), rewrites it into two private kernel funcs:
+
+      - `<name>_partial(%x: tensor<R>) -> tensor<N>`:
+            %x2 = tensor.expand_shape %x to tensor<NxK>
+            %ws = linalg.fill 0 outs(tensor.empty() : tensor<N>)
+            %r  = linalg.generic {iter=[parallel, reduction]}
+                  ins(%x2) outs(%ws) -> tensor<N>      // axis-1 reduce
+            return %r
+      - `<name>_combine(%ws: tensor<N>, %init: tensor<>) -> tensor<>`:
+            %r = linalg.generic {iter=[reduction]}
+                 ins(%ws) outs(%init) -> tensor<>       // small full reduce
+            return %r
+
+    and replaces calls in the coordinator with `partial(in)` → `combine(ws, init)`,
+    using two `func.call`s connected by an SSA tensor value (the workspace).
+
+    N is the number of partial slots ≤ AICoreCount (8 by default; the partial
+    kernel's autotuner picks a block_dim ≤ N).  Requires R % N == 0; otherwise
+    falls back to N=1 (no split — equivalent to P3b-2's single-block path).
+
+    Models AF `ReducePartitionCaseGenerator::GeneratorRCoreTask` / phase_1 +
+    phase_2 ImplGraph split, but uses MLIR SSA def-use to express the workspace
+    dependency (instead of `groups_relations_in`).  See plan
+    docs/superpowers/plans/2026-05-14-p3b-rcore-reduce-multicore.zh.md §5.
+  }];
+  let constructor = "mlir::afir::createAutoFuseSplitRCoreGroupPass()";
+  let options = [
+    Option<"parallelSlots", "parallel-slots", "int64_t", "8",
+           "Target N (partial output extent / parallel block count)">,
+  ];
+  let dependentDialects = [
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+  ];
+}
+
+def AutoFuseIsolateKernelOutputs : Pass<"auto-fuse-isolate-kernel-outputs", "mlir::func::FuncOp"> {
+  let summary = "Make every returned tensor bufferize to a fresh buffer distinct from any input";
+  let description = [{
+    Runs at the start of auto-fuse-codegen, on each outlined kernel func.
+
+    For each value flowing to `func.return`, finds the linalg DPS op producing
+    it. If that op's `outs(%init)` operand traces back (through tensor.cast /
+    collapse_shape / expand_shape) to a func BlockArgument, the init is wrapped:
+
+        %fresh = bufferization.alloc_tensor() copy(%init) : T
+        ... outs(%fresh) ...
+
+    This guarantees the bufferized output buffer is distinct from the input
+    init buffer, so the kernel's memref signature is "inputs read-only +
+    output written-to" rather than "in-place writeback through init". The
+    host-launch helper / network.json then route buffers correctly without
+    aliasing tricks.
+
+    For pure-elementwise ops the seed copy is wasted (the kernel overwrites
+    every element); a later peephole can elide it. Correctness first.
+  }];
+  let constructor = "mlir::afir::createAutoFuseIsolateKernelOutputsPass()";
+  let dependentDialects = [
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+def AutoFuseRestoreMatmul : Pass<"auto-fuse-restore-matmul", "mlir::func::FuncOp"> {
+  let summary = "Specialize generic-form matmul ops back to linalg.matmul";
+  let description = [{
+    CV-fusion Phase 5 of [[af-cv-fusion-port]].  Upstream
+    `--linalg-generalize-named-ops` converts `linalg.matmul` to a
+    `linalg.generic` with iter [par, par, red] + extf?/mulf/addf body.
+    Downstream AscendCBufferPlacement + LinalgToAscendC walk for
+    `linalg::MatmulOp` to place A1/A2/CO1 + emit mmad; the generic form
+    misses them.  This pass restores the matmul:
+      - Walk `linalg::GenericOp`; for those matching the matmul signature
+        (`isMatmulGeneric` heuristic — iter shape + body has both mulf
+        and addf), rebuild as `linalg.matmul`.
+      - All other generics untouched (transpose, broadcast, fill, reduce,
+        ... — none get specialized).  Vector-side gates unaffected.
+  }];
+  let constructor = "mlir::afir::createAutoFuseRestoreMatmulPass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+def AutoFuseFoldShadowAlloc : Pass<"auto-fuse-fold-shadow-alloc", "mlir::func::FuncOp"> {
+  let summary = "Fold bufferize-inserted dynamic-size shadow allocs back to in-place writes";
+  let description = [{
+    Runs after one-shot-bufferize and before auto-fuse-insert-tile-buffers.
+
+    One-shot-bufferize wraps linalg.generic ops with a dynamic-size DPS init
+    in a "shadow sandwich" of `memref.alloc + memref.copy(src->alloc) +
+    linalg.generic(outs=alloc) + memref.copy(alloc->dst)` to avoid aliasing.
+    This is over-conservative for our tile-fuse output where the source and
+    destination subviews are the same iter_arg region.  Folding the sandwich
+    back to `linalg.generic(outs=dst)` lets the rest of the pipeline (which
+    cannot handle GM-space memref.alloc) succeed.
+  }];
+  let constructor = "mlir::afir::createAutoFuseFoldShadowAllocPass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect",
+  ];
+}
+
+def AutoFuseInsertTileBuffers : Pass<"auto-fuse-insert-tile-buffers", "mlir::func::FuncOp"> {
+  let summary = "Promote inner-tile linalg.generic operands from GM to on-chip VECIN/VECOUT";
+  let description = [{
+    Runs after one-shot-bufferize and before ascendc-buffer-placement.
+
+    For each linalg.generic whose output memref is in global memory (memory_space=0):
+      - Allocates a VECIN (memory_space=9) buffer for each GM input and inserts
+        memref.copy(gm_input -> vecin_alloc) before the op.
+      - Allocates a VECOUT (memory_space=10) buffer for the output and inserts
+        memref.copy(vecout_alloc -> gm_output) after the op.
+      - Rewrites the generic to use the on-chip buffers.
+
+    After promotion, remaining GM->GM memref.copy ops (bufferization artifacts
+    from one-shot-bufferize's yield-copy lowering) are erased.
+  }];
+  let constructor = "mlir::afir::createAutoFuseInsertTileBuffersPass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// RecognizeAttention
+//===----------------------------------------------------------------------===//
+
+def RecognizeAttention : Pass<"recognize-attention", "mlir::ModuleOp"> {
+  let summary = "Recognize decomposed scaled-dot-product attention and route to aclnn FlashAttentionScore";
+  let description = [{
+    Matches the attention subgraph a transformer encoder lowers to at the linalg
+    level — two `linalg.batch_matmul` with a softmax (a `math.exp`-containing
+    chain) between them:
+
+        bmm1:  Q[BH,S,D] @ K^T[BH,D,S]   -> scores[BH,S,S]
+        softmax(scores)                  -> probs[BH,S,S]
+        bmm2:  probs[BH,S,S] @ V[BH,S,D] -> out[BH,S,D]
+
+    and replaces it with a single `func.call @__aclnn_flash_attention` on BNSD
+    [BH,1,S,D] tensors (Q = bmm1.lhs, K = transpose(bmm1.rhs), V = bmm2.rhs).
+    The scale (1/sqrt(D)) and softmax are recomputed inside FlashAttentionScore,
+    so the matched region is discarded (left dead for DCE).
+
+    The created private decl carries {aclnn.kind = "flash_attention"}, finalized
+    by `aclnn-finalize-decl` (shares the contract with convert-tm-tensor-attention).
+  }];
+  let constructor = "mlir::afir::createRecognizeAttentionPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// RecognizeLayerNorm
+//===----------------------------------------------------------------------===//
+
+def RecognizeEmbedding : Pass<"recognize-embedding", "mlir::ModuleOp"> {
+  let summary = "Recognize torch.nn.Embedding gather pattern and route to aclnn";
+  let description = [{
+    torch.export lowers nn.Embedding(input_ids) into a linalg.generic whose
+    body uses tensor.extract on the embedding table with index_cast +
+    cmpi+cf.assert bounds checks. TileFuse codegen can't lower this pattern
+    (SSA dominance breaks on the extract when fused with downstream adds).
+    Match the pattern, replace with @__aclnn_embedding(table, indices), let
+    DCE clean up. The created private decl carries {aclnn.kind = "embedding"},
+    finalized by aclnn-finalize-decl to aclnn.op="Embedding".
+  }];
+  let constructor = "mlir::afir::createRecognizeEmbeddingPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::cf::ControlFlowDialect",
+  ];
+}
+
+def FuseTransposeIntoElementwise
+    : Pass<"fuse-transpose-into-elementwise", "mlir::ModuleOp"> {
+  let summary = "Absorb a transpose into its sole elementwise consumer (gated)";
+  let description = [{
+    A standalone linalg.transpose is otherwise kept as its own group and routed
+    to the aclnn single-op fallback. When its SOLE consumer is a pure-elementwise
+    linalg.generic, fold the permutation into that consumer's input indexing map
+    and delete the transpose (the "eliminate" form, like
+    --linalg-fuse-elementwise-ops) — GATED to the cases the on-chip transpose
+    template can codegen: transposeSupportedByIntrinsic (f16/i16 ∧ rank-2 [1,0]).
+    f32 / rank-N / general perms stay as separate transposes → aclnn, unchanged.
+  }];
+  let constructor = "mlir::afir::createFuseTransposeIntoElementwisePass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+def RecognizeBatchNorm : Pass<"recognize-batchnorm", "mlir::ModuleOp"> {
+  let summary = "Recognize decomposed BatchNorm (eval mode) and route to aclnn BatchNorm";
+  let description = [{
+    Matches the BatchNorm subgraph torch.export produces for eval-mode
+    nn.BatchNorm2d at the linalg level (per-channel broadcast over [C, H, W]):
+
+        inv_std = 1.0 / sqrt(running_var + eps)
+        out     = (x - running_mean) * inv_std * weight + bias
+
+    Anchors on `math.sqrt` inside a linalg.generic, walks back to running_var
+    and forward through the 1/sqrt divf (with its cf.assert non-zero guard),
+    centered subf, normalize/scale/bias mulf+addf chain, and folds the whole
+    region into a single
+    `func.call @__aclnn_batch_norm(x, weight, bias, running_mean, running_var)`.
+    The created private decl carries {aclnn.kind = "batch_norm"}, finalized by
+    `aclnn-finalize-decl` to aclnn.op="BatchNorm". eps is recomputed inside
+    run_BatchNorm (assumes the torch default 1e-5).
+  }];
+  let constructor = "mlir::afir::createRecognizeBatchNormPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+def RecognizeLayerNorm : Pass<"recognize-layernorm", "mlir::ModuleOp"> {
+  let summary = "Recognize decomposed LayerNorm and route to aclnn LayerNorm";
+  let description = [{
+    Matches the LayerNorm subgraph torch lowers nn.LayerNorm to at the linalg
+    level (normalizing over the last dim):
+
+        mean = sum(x)/N ; cen = x - mean ; var = sum(cen*cen)/N
+        rstd = rsqrt(var + eps) ; norm = cen * rstd
+        out  = norm * gamma + beta
+
+    Anchors on the `math.rsqrt`, walks to the centered input (x), the affine
+    weight (gamma) and bias (beta), and folds the whole region into a single
+    `func.call @__aclnn_layer_norm(x, gamma, beta)` (left dead for DCE). The
+    created private decl carries {aclnn.kind = "layer_norm"}, finalized by
+    `aclnn-finalize-decl` to aclnn.op="LayerNorm". eps is recomputed inside
+    run_LayerNorm (assumes the torch default 1e-5).
+  }];
+  let constructor = "mlir::afir::createRecognizeLayerNormPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+def LowerBroadcastExtract : Pass<"lower-broadcast-extract", "mlir::func::FuncOp"> {
+  let summary = "Raise torch's extract-based dynamic broadcast to an affine-map "
+                "linalg broadcast";
+  let description = [{
+    torch lowers a dynamic broadcast (a tensor whose dim might be 1) as an
+    extract-based generic with a `dim==1 ? 0 : index` guard, rather than a clean
+    affine-map broadcast.  That form defeats RecognizeLayerNorm's broadcast
+    matcher (and the vector codegen).  This pass converts such a generic back to
+    an `ins`-broadcast generic (`yield %in` with a broadcast indexing map).  The
+    spurious guard is dropped only when its tested dim is the SAME SSA value as
+    the output init's matching loop extent (so `index in [0,dim)` makes the
+    guard a no-op).  No-op for static / already-canonical broadcasts.
+  }];
+  let constructor = "mlir::afir::createLowerBroadcastExtractPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// AclnnFinalizeDecl
+//===----------------------------------------------------------------------===//
+
+def AclnnFinalizeDecl : Pass<"aclnn-finalize-decl", "mlir::ModuleOp"> {
+  let summary = "Finalize aclnn func.func private declarations: replace aclnn.kind with aclnn.op + aclnn.layout";
+  let description = [{
+    Runs after auto-fuse-group-outline. Scans func.func private declarations
+    that carry {aclnn.kind = "..."} and replaces that marker with the final
+    aclnn metadata attributes consumed by AclnnBackend:
+
+      aclnn.kind = "flash_attention"
+        ->  aclnn.op = "FlashAttentionScore", aclnn.layout = "BNSD"
+
+    aclnn.kind is removed after finalization. Unknown kind values trigger
+    signalPassFailure (fail-fast).
+
+    Registered kinds (Phase 1):
+      "flash_attention" -> FlashAttentionScore, BNSD
+  }];
+  let constructor = "mlir::afir::createAclnnFinalizeDeclPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// BroadcastAbsorb
+//===----------------------------------------------------------------------===//
+
+def AutoFuseBroadcastAbsorb : Pass<"auto-fuse-broadcast-absorb", "mlir::func::FuncOp"> {
+  let summary = "Absorb linalg.broadcast into downstream linalg.generic indexing maps";
+  let description = [{
+    For each linalg.broadcast whose result is consumed by exactly one
+    linalg.generic, replaces the generic's operand with the broadcast's
+    original input and drops the broadcast dimensions from the operand's
+    indexing map. Broadcasts with other consumers are left unchanged.
+  }];
+  let constructor = "mlir::afir::createAutoFuseBroadcastAbsorbPass()";
+  let dependentDialects = ["mlir::linalg::LinalgDialect"];
 }
 
 #endif // AFIR_CONVERSION_PASSES

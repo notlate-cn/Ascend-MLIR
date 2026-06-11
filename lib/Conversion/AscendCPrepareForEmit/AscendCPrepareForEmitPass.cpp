@@ -35,6 +35,8 @@
 
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 
+#include "Analysis/SymbolicShape/DimSymbolTable.h"
+#include "Analysis/SymbolicShape/SymExpr.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -108,11 +110,38 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   // Scan the whole function for `memref.dim %argX, %cI` where %argX is a
   // BlockArgument and %cI is an arith.constant index.  Collect unique
   // (argNumber, dimIndex) pairs in stable order and remember the ops.
-  SmallVector<DimKey> dimKeys;        // unique keys, insertion order
+  SmallVector<DimKey> dimKeys;        // unique canonical keys, insertion order
   SmallVector<memref::DimOp> dimOps; // one entry per op (may repeat key)
 
+  // When afir-symbolize-shapes ran, two (argN, dimIdx) pairs that the linalg op
+  // proved equal share one root symbol -- fold both onto the root's (arg, dim)
+  // so they collapse to a single TilingData field instead of e.g. emitting both
+  // dim_arg3_0 and dim_arg0_0.  Falls back to identity when the attrs aren't
+  // present (fully-static kernel, or symbolize didn't run).
+  auto dimSymsAttr = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+  std::optional<mlir::afir::symshape::DimSymbolTable> symTable;
+  if (dimSymsAttr)
+    symTable = mlir::afir::symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+  auto canonicalize = [&](unsigned argN, int64_t dimIdx) -> DimKey {
+    if (symTable && dimIdx >= 0) {
+      if (auto a = func.getArgAttrOfType<StringAttr>(argN, "afir.symbolic_shape")) {
+        if (auto list = mlir::afir::symshape::parseSymExprList(a.getValue())) {
+          if ((size_t)dimIdx < list->size()) {
+            const auto &e = (*list)[dimIdx];
+            if (e.getKind() == mlir::afir::symshape::SymExpr::Kind::Sym &&
+                e.getSym() < symTable->numRoots()) {
+              auto src = symTable->sourceOf(e.getSym());
+              return DimKey{src.first, (int64_t)src.second};
+            }
+          }
+        }
+      }
+    }
+    return DimKey{argN, dimIdx};
+  };
+
   auto addDimKey = [&](unsigned argNum, int64_t dimIdx) {
-    DimKey key{argNum, dimIdx};
+    DimKey key = canonicalize(argNum, dimIdx);
     if (llvm::none_of(dimKeys, [&](const DimKey &k) { return k == key; }))
       dimKeys.push_back(key);
   };
@@ -190,27 +219,63 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     }
   }
 
-  // ── 2. Collect i64 tiling args ───────────────────────────────────────────
-  SmallVector<BlockArgument> i64Args;
-  for (BlockArgument arg : entry.getArguments()) {
-    if (arg.getType().isInteger(64))
-      i64Args.push_back(arg);
+  // ── 2. Collect tiling args ────────────────────────────────────────────────
+  // Phase B: read from auto_fuse.tiling_infos if present.
+  // Phase A fallback: scan i64 block args with positional default names.
+  SmallVector<BlockArgument> tilingArgs;
+  SmallVector<std::string>   tilingArgNames;
+
+  if (auto moduleOp = func->getParentOfType<ModuleOp>()) {
+    if (auto tilingInfosAttr =
+            moduleOp->getAttrOfType<ArrayAttr>("auto_fuse.tiling_infos")) {
+      for (Attribute infoAttr : tilingInfosAttr) {
+        auto info = dyn_cast<DictionaryAttr>(infoAttr);
+        if (!info) continue;
+        auto kid = dyn_cast_or_null<StringAttr>(info.get("kernel_id"));
+        if (!kid || kid.getValue() != func.getName())
+          continue;
+        auto fieldsAttr = dyn_cast_or_null<ArrayAttr>(info.get("fields"));
+        if (!fieldsAttr) break;
+        for (Attribute fa : fieldsAttr) {
+          auto field = dyn_cast<DictionaryAttr>(fa);
+          if (!field) continue;
+          // Schema v2: shape_derived fields lack arg_index; skip them here.
+          auto argIdxAttr = dyn_cast_or_null<IntegerAttr>(field.get("arg_index"));
+          auto nameAttr   = dyn_cast_or_null<StringAttr>(field.get("name"));
+          if (!argIdxAttr || !nameAttr) continue;
+          unsigned argIdx = (unsigned)argIdxAttr.getValue().getSExtValue();
+          if (argIdx >= entry.getNumArguments()) {
+            func.emitError("auto_fuse.tiling_infos arg_index ")
+                << argIdx << " out of range for func " << func.getName();
+            return failure();
+          }
+          tilingArgs.push_back(cast<BlockArgument>(entry.getArgument(argIdx)));
+          tilingArgNames.push_back(nameAttr.getValue().str());
+        }
+        break;
+      }
+    }
+  }
+  // Phase A fallback: all i64 block args.
+  if (tilingArgs.empty()) {
+    static const char *kPhaseANames[] = {"TB_M", "TB_N", "Tb_M", "Tb_N", "t_K"};
+    unsigned i = 0;
+    for (BlockArgument arg : entry.getArguments()) {
+      if (arg.getType().isInteger(64)) {
+        tilingArgs.push_back(arg);
+        tilingArgNames.push_back(
+            i < std::size(kPhaseANames) ? kPhaseANames[i++] : "field");
+      }
+    }
   }
 
-  // ── 3. Build TilingData field names ─────────────────────────────────────
-  // Order: i64 tile-size args first, then dim fields.
-  static const char *kDefaultTileNames[] = {"TB_M", "TB_N", "Tb_M", "Tb_N", "t_K"};
-  static const unsigned kDefaultCount =
-      sizeof(kDefaultTileNames) / sizeof(kDefaultTileNames[0]);
-
-  // Build all names upfront in a stable vector so StringRefs stay valid.
+  // ── 3. Build TilingData field names ──────────────────────────────────────
+  // Phase B: use names from tiling.infos (tilingArgNames already populated).
+  // Phase A fallback: tilingArgNames populated from positional defaults above.
   SmallVector<std::string> tilingNameStorage;
-  tilingNameStorage.reserve(i64Args.size() + dimKeys.size());
-
-  // i64 tile-size args
-  for (unsigned i = 0; i < i64Args.size(); ++i)
-    tilingNameStorage.push_back(i < kDefaultCount ? kDefaultTileNames[i] : "field");
-  // dim fields: "dim_argN_D"
+  tilingNameStorage.reserve(tilingArgs.size() + dimKeys.size());
+  for (const std::string &n : tilingArgNames)
+    tilingNameStorage.push_back(n);
   for (const DimKey &key : dimKeys)
     tilingNameStorage.push_back("dim_arg" + std::to_string(key.argNumber) +
                                 "_" + std::to_string(key.dimIndex));
@@ -247,18 +312,28 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     }
   }
 
-  // ── 6. Replace i64 arg uses with tiling fields ──────────────────────────
-  for (unsigned i = 0; i < i64Args.size(); ++i)
-    i64Args[i].replaceAllUsesWith(tilingFieldVals[i]);
+  // ── 6. Replace tiling arg uses with tiling fields ────────────────────────
+  // Invariant: tilingArgs[i] ↔ tilingArgNames[i] ↔ tilingFieldVals[i].
+  assert(tilingArgs.empty() || hasTilingData);
+  // Phase B args are index-typed: cast i64 member value → index before replace.
+  for (unsigned i = 0; i < tilingArgs.size(); ++i) {
+    Value fieldVal = tilingFieldVals[i]; // always i64 from emitasc.member
+    if (tilingArgs[i].getType().isIndex()) {
+      // builder insertion point is still at start of entry after step 5.
+      fieldVal = builder.create<arith::IndexCastOp>(
+          func.getLoc(), IndexType::get(ctx), fieldVal);
+    }
+    tilingArgs[i].replaceAllUsesWith(fieldVal);
+  }
 
   // ── 7. Replace memref.dim uses with index-cast of tiling fields ──────────
-  // dimKeys[k] corresponds to tilingFieldVals[i64Args.size() + k].
-  unsigned dimFieldBase = i64Args.size();
+  // dimKeys[k] corresponds to tilingFieldVals[tilingArgs.size() + k].
+  unsigned dimFieldBase = tilingArgs.size();
 
   // Helper: look up the i64 tiling field Value for a (argNumber, dimIndex) key.
   // Returns a null Value if the key was not collected.
   auto getDimI64Value = [&](unsigned argNum, int64_t dimIdx) -> Value {
-    DimKey key{argNum, dimIdx};
+    DimKey key = canonicalize(argNum, dimIdx);
     auto it = llvm::find_if(dimKeys, [&](const DimKey &d) { return d == key; });
     if (it == dimKeys.end())
       return {};
@@ -270,7 +345,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     auto arg = cast<BlockArgument>(dimOp.getSource());
     auto constOp = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
     int64_t dimIdxVal = cast<IntegerAttr>(constOp.getValue()).getValue().getSExtValue();
-    DimKey key{arg.getArgNumber(), dimIdxVal};
+    DimKey key = canonicalize(arg.getArgNumber(), dimIdxVal);
     unsigned k = llvm::find_if(dimKeys, [&](const DimKey &d) { return d == key; }) -
                  dimKeys.begin();
     Value i64Val = tilingFieldVals[dimFieldBase + k];
@@ -642,13 +717,21 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       op->erase();
   }
 
-  // ── 8. Erase old i64 block args (reverse order) ─────────────────────────
-  SmallVector<unsigned> toErase;
-  for (BlockArgument arg : i64Args)
-    toErase.push_back(arg.getArgNumber());
-  llvm::sort(toErase, std::greater<unsigned>());
-  for (unsigned idx : toErase)
-    entry.eraseArgument(idx);
+  // ── 8. Erase tiling block args (reverse order to keep indices stable) ────
+  {
+    SmallVector<unsigned> toErase;
+    for (BlockArgument arg : tilingArgs)
+      toErase.push_back(arg.getArgNumber());
+    llvm::sort(toErase, std::greater<unsigned>());
+    for (unsigned idx : toErase)
+      entry.eraseArgument(idx);
+    // entry.eraseArgument does not update FuncOp::arg_attrs; clear it so the
+    // attribute count matches the new block arg count after step 9 rebuilds the
+    // function type. (TilePlanGen may have set auto_fuse.default_tile_size on
+    // the now-erased tiling args.)
+    if (func->getAttr("arg_attrs"))
+      func->removeAttr("arg_attrs");
+  }
 
   // ── 9. Update function type ──────────────────────────────────────────────
   SmallVector<Type> newArgTypes;

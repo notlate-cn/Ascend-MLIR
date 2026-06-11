@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 namespace mlir::runtime {
 
@@ -59,6 +60,15 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
     }
   }
 
+  // Parse fortran_order (column-major data layout flag).
+  bool fortranOrder = false;
+  {
+    std::regex re(R"('fortran_order'\s*:\s*(True|False))");
+    std::smatch m;
+    if (std::regex_search(header, m, re))
+      fortranOrder = (m[1].str() == "True");
+  }
+
   // Parse dtype
   {
     std::regex re(R"('descr'\s*:\s*'([^']+)')");
@@ -80,11 +90,49 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
   }
 
   arr.allocate();
-  f.read(reinterpret_cast<char*>(arr.data),
-         static_cast<std::streamsize>(arr.nbytes()));
-  if (f.gcount() != static_cast<std::streamsize>(arr.nbytes()))
+  const size_t nbytes = arr.nbytes();
+
+  if (!fortranOrder || arr.shape.size() < 2) {
+    f.read(reinterpret_cast<char*>(arr.data),
+           static_cast<std::streamsize>(nbytes));
+    if (f.gcount() != static_cast<std::streamsize>(nbytes))
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "Truncated data in: %s", path.c_str());
+    return arr;
+  }
+
+  // Fortran (column-major) data section: read it raw, then re-pack into the
+  // C-contiguous (row-major) layout that the rest of the runtime assumes.
+  std::vector<uint8_t> raw(nbytes);
+  f.read(reinterpret_cast<char*>(raw.data()),
+         static_cast<std::streamsize>(nbytes));
+  if (f.gcount() != static_cast<std::streamsize>(nbytes))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "Truncated data in: %s", path.c_str());
+
+  const size_t rank = arr.shape.size();
+  const size_t elemBytes = dtypeBytes(arr.dtype);
+  std::vector<size_t> fStride(rank);
+  size_t accF = 1;
+  for (size_t i = 0; i < rank; ++i) {
+    fStride[i] = accF;
+    accF *= static_cast<size_t>(arr.shape[i]);
+  }
+  const size_t numElems = arr.numElements();
+  uint8_t *dst = static_cast<uint8_t*>(arr.data);
+  std::vector<size_t> idx(rank, 0);
+  for (size_t linear = 0; linear < numElems; ++linear) {
+    size_t srcElem = 0;
+    for (size_t d = 0; d < rank; ++d)
+      srcElem += idx[d] * fStride[d];
+    std::memcpy(dst + linear * elemBytes, raw.data() + srcElem * elemBytes,
+                elemBytes);
+    for (size_t d = rank; d-- > 0;) {
+      if (++idx[d] < static_cast<size_t>(arr.shape[d]))
+        break;
+      idx[d] = 0;
+    }
+  }
   return arr;
 }
 

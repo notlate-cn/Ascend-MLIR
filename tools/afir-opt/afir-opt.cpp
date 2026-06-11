@@ -21,6 +21,7 @@
 #include "Dialect/AFIR/Transforms/Passes.h"
 #include "Dialect/AFIR/TransformOps/AFIRTransformOps.h"
 #include "Conversion/Passes.h"
+#include "Conversion/TorchFrontend/TorchFrontendPasses.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 using namespace mlir;
@@ -46,6 +47,12 @@ int main(int argc, char **argv) {
   // Register AFIR-specific passes
   afir::registerAFIRPasses();
   afir::registerAFIRConversionPasses();
+  // Torch-frontend passes (e.g. --remove-cf-assert, used by network_runner
+  // phase-1 to strip torch's dynamic-shape broadcast guards).
+  afir::registerTorchFrontendPasses();
+
+  // Register AutoFuse compound pipeline (elewise-fusion → group-analysis → group-outline)
+  afir::registerAutoFusePipeline();
 
   return asMainReturnCode(MlirOptMain(argc, argv, "AFIR optimizer driver\n", registry));
 }

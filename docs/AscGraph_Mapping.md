@@ -663,7 +663,6 @@ def map_position(proto_position: int, alloc_type: int) -> str:
 
 - **AFIR 方言定义**: `include/Dialect/AFIR/AFIRAttrs.td`, `AFIREnums.td`, `AFIROps.td`
 - **AscGraph Protobuf**: `graph_metadef/proto/ascendc_ir.proto`, `ge_ir.proto`
-- **转换工具**: `python/ascir-to-afir/ascir_to_afir.py`
 
 ---
 

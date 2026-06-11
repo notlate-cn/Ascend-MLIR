@@ -1,5 +1,9 @@
 add_mlir_library(AscendCPrepareForEmitConversion
   AscendCPrepareForEmitPass.cpp
+  FlattenGMPtrPass.cpp
+  PackTilingDataPass.cpp
+  FinalizeKernelPass.cpp
+  DecomposeMultiAxisBroadcastPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion
@@ -9,6 +13,7 @@ add_mlir_library(AscendCPrepareForEmitConversion
 
   LINK_LIBS PUBLIC
   AFIRDialect
+  AFIRSymbolicShape
   MLIRAsc
   MLIREmitAsc
   MLIRAffineDialect

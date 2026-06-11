@@ -9,6 +9,8 @@ if [[ -f "${REAL_NPU_CI_DIR}/versions.env" ]]; then
   source "${REAL_NPU_CI_DIR}/versions.env"
 fi
 
+DATA_ROOT="${ASCEND_MLIR_CI_DATA_ROOT:-/data/nyh}"
+
 REMOTE="${ASCEND_MLIR_CI_REMOTE:-}"
 PORT="${ASCEND_MLIR_CI_REMOTE_PORT:-141}"
 REMOTE_DIR="${ASCEND_MLIR_CI_REMOTE_DIR:-${ASCEND_MLIR_CI_REMOTE_SOURCE_DIR:-/data/nyh/Codex-Ascend-MLIR-current}}"
@@ -70,7 +72,8 @@ The sync step includes tracked files, populated submodule files, and unignored
 untracked files from the local git worktree. Ignored artifacts such as build/,
 out/, generated .npy files, and macOS metadata files are not synced.
 
-For the shared real-NPU host, the remote source directory must be under /data/nyh.
+For the shared real-NPU host, the remote source directory must be under the data
+root, set by ASCEND_MLIR_CI_DATA_ROOT (default /data/nyh).
 
 SSH authentication uses normal ssh keys first. If ASCEND_MLIR_CI_SSH_PASSWORD
 is set in the local environment, sshpass is used for password authentication.
@@ -215,15 +218,15 @@ run_ssh() {
   fi
 }
 
-if [[ -z "${REMOTE_DIR}" || "${REMOTE_DIR}" == "/" || "${REMOTE_DIR}" == "/data/nyh" ]]; then
+if [[ -z "${REMOTE_DIR}" || "${REMOTE_DIR}" == "/" || "${REMOTE_DIR}" == "${DATA_ROOT}" ]]; then
   echo "unsafe --remote-dir: ${REMOTE_DIR}" >&2
   exit 2
 fi
 
 case "${REMOTE_DIR}" in
-  /data/nyh/*) ;;
+  "${DATA_ROOT}"/*) ;;
   *)
-    echo "--remote-dir must be under /data/nyh for the shared real-NPU host: ${REMOTE_DIR}" >&2
+    echo "--remote-dir must be under ${DATA_ROOT} for the shared real-NPU host: ${REMOTE_DIR}" >&2
     exit 2
     ;;
 esac

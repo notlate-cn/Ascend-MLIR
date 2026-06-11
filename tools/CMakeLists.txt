@@ -1,5 +1,7 @@
+add_subdirectory(aclnn-backend)
 add_subdirectory(afir-opt)
 add_subdirectory(afir-translate)
+add_subdirectory(ascend-debug)
 add_subdirectory(autotuner)
 add_subdirectory(mix-compiler)
 add_subdirectory(mix-tiling-helper)

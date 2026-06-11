@@ -27,7 +27,12 @@ using namespace mlir::runtime;
 using namespace llvm;
 
 static cl::opt<std::string> SpaceFile("space",
-    cl::desc("Path to tiling_space.json"), cl::Required);
+    cl::desc("Path to tiling_space.json (single variant); mutually exclusive "
+             "with --family"), cl::init(""));
+static cl::opt<std::string> FamilyFile("family",
+    cl::desc("Path to <kid>_family.json (multi-variant); per-variant space.json "
+             "paths are read from the family index. Cross-variant argmin "
+             "selects best."), cl::init(""));
 static cl::opt<std::string> KernelFile("kernel",
     cl::desc("Kernel .cpp source file (overrides kernel_file in JSON)"), cl::init(""));
 static cl::opt<std::string> InputFiles("inputs",
@@ -71,42 +76,73 @@ static std::map<std::string, int64_t> parseKV(const std::string& s) {
   return m;
 }
 
-// Evaluate block_dim_expr: supports "ceil(X/Y)" and "X/Y"
+// Evaluate a block-dim expression.  Grammar (produced by TilePlanGen, mirrors
+// SymExpr::emitC plus a ceil() wrapper):
+//   expr ::= name | int | '(' expr op expr ')' | 'ceil(' expr '/' expr ')'
+//   op   ::= + | - | * | /                       (/ is integer division)
+// `name` is a tiling-param ("XBLOCK") or a shape key ("arg0_dim2"); unknown
+// names default to 1 with a warning.  Whitespace is stripped first.
+static int64_t evalBlockExpr(llvm::StringRef e,
+                             const std::map<std::string, int64_t>& vars) {
+  e = e.trim();
+  if (e.empty()) return 1;
+
+  // ceil( A / B ) -- split on the *last* top-level '/'.
+  if (e.starts_with("ceil(") && e.back() == ')') {
+    llvm::StringRef inner = e.drop_front(5).drop_back(1);
+    int depth = 0;
+    size_t slash = llvm::StringRef::npos;
+    for (size_t i = 0; i < inner.size(); ++i) {
+      char c = inner[i];
+      if (c == '(') ++depth;
+      else if (c == ')') --depth;
+      else if (c == '/' && depth == 0) slash = i;
+    }
+    if (slash == llvm::StringRef::npos) return evalBlockExpr(inner, vars);
+    int64_t a = evalBlockExpr(inner.substr(0, slash), vars);
+    int64_t b = evalBlockExpr(inner.substr(slash + 1), vars);
+    return b == 0 ? 1 : (a + b - 1) / b;
+  }
+
+  // ( A op B ) -- emitC fully parenthesizes, so exactly one top-level op.
+  if (e.front() == '(' && e.back() == ')') {
+    llvm::StringRef inner = e.drop_front(1).drop_back(1);
+    int depth = 0;
+    for (size_t i = 0; i < inner.size(); ++i) {
+      char c = inner[i];
+      if (c == '(') { ++depth; continue; }
+      if (c == ')') { --depth; continue; }
+      if (depth != 0 || i == 0) continue;
+      if (c != '+' && c != '-' && c != '*' && c != '/') continue;
+      char p = inner[i - 1];
+      if (p == '+' || p == '-' || p == '*' || p == '/' || p == '(') continue; // unary sign
+      int64_t a = evalBlockExpr(inner.substr(0, i), vars);
+      int64_t b = evalBlockExpr(inner.substr(i + 1), vars);
+      switch (c) {
+      case '+': return a + b;
+      case '-': return a - b;
+      case '*': return a * b;
+      case '/': return b == 0 ? 1 : a / b;
+      }
+    }
+    return evalBlockExpr(inner, vars); // redundant parens around a leaf
+  }
+
+  // leaf: integer literal or variable name.
+  int64_t v;
+  if (!e.getAsInteger(10, v)) return v;
+  auto it = vars.find(e.str());
+  if (it != vars.end()) return it->second;
+  llvm::errs() << "Warning: unrecognized token in block_dim_expr: '" << e
+               << "', treating as 1\n";
+  return 1;
+}
+
 static int64_t evalBlockDimExpr(const std::string& expr,
-                                 const std::map<std::string, int64_t>& vars) {
-  bool is_ceil = false;
-  std::string inner;
-  {
-    std::string e = expr;
-    e.erase(std::remove(e.begin(), e.end(), ' '), e.end());
-    if (e.size() > 5 && e.substr(0, 5) == "ceil(" && e.back() == ')') {
-      inner = e.substr(5, e.size() - 6);
-      is_ceil = true;
-    } else {
-      inner = e;
-    }
-  }
-  auto slash = inner.find('/');
-  if (slash == std::string::npos) {
-    auto it = vars.find(inner);
-    return it != vars.end() ? it->second : 1;
-  }
-  std::string lhs = inner.substr(0, slash);
-  std::string rhs = inner.substr(slash + 1);
-  auto lookup = [&](const std::string& name) -> int64_t {
-    auto it = vars.find(name);
-    if (it != vars.end()) return it->second;
-    int64_t v = 1;
-    if (llvm::StringRef(name).getAsInteger(10, v)) {
-      llvm::errs() << "Warning: unrecognized token in block_dim_expr: '" << name << "', treating as 1\n";
-      return 1;
-    }
-    return v;
-  };
-  int64_t a = lookup(lhs), b = lookup(rhs);
-  if (b == 0) return 1;
-  if (is_ceil) return (a + b - 1) / b;
-  return a / b;
+                                const std::map<std::string, int64_t>& vars) {
+  std::string e = expr;
+  e.erase(std::remove(e.begin(), e.end(), ' '), e.end());
+  return evalBlockExpr(e, vars);
 }
 
 static std::vector<uint8_t> packTiling(
@@ -182,6 +218,10 @@ struct TilingSpace {
   std::string kernel_type = "vec";   // "vec" | "cube" | "mix"; default vec
   std::string soc;
   std::string block_dim_expr;
+  // UB-aware prune (stamped by CannTranslation from SoC table + symbolic
+  // init_buffer sizes; 0/empty means "unknown, skip prune").
+  int64_t     ub_budget_bytes = 0;
+  std::vector<std::string> ub_cost_bytes_exprs;
   std::vector<TilingParam> params;
 };
 
@@ -441,6 +481,11 @@ static llvm::Expected<TilingSpace> loadTilingSpace(const std::string& path) {
   if (auto v = obj->getString("kernel_type"))    ts.kernel_type    = v->str();
   if (auto v = obj->getString("soc"))            ts.soc            = v->str();
   if (auto v = obj->getString("block_dim_expr")) ts.block_dim_expr = v->str();
+  if (auto v = obj->getInteger("ub_budget_bytes")) ts.ub_budget_bytes = *v;
+  if (auto *arr = obj->getArray("ub_cost_bytes_exprs"))
+    for (auto &av : *arr)
+      if (auto s = av.getAsString())
+        ts.ub_cost_bytes_exprs.push_back(s->str());
 
   auto* params = obj->getArray("tiling_params");
   if (!params)
@@ -551,12 +596,23 @@ static llvm::Expected<KernelArtifact> prepareArtifact(const TilingSpace &space) 
   return compiler.compile(request);
 }
 
+struct VariantSummary {
+  std::string id;
+  std::string kernelName;
+  bool passed = false;
+  int64_t cycles = 0;
+  std::map<std::string, int64_t> config;
+};
+
 static llvm::Error writeBestConfigJson(const std::string &path,
                                       const TilingSpace &space,
                                       const KernelArtifact &artifact,
                                       const SearchResult &best,
-                                      const std::map<std::string, int64_t> &shape) {
+                                      const std::map<std::string, int64_t> &shape,
+                                      llvm::StringRef variantId = "",
+                                      llvm::ArrayRef<VariantSummary> allVariants = {}) {
   llvm::json::Object root;
+  if (!variantId.empty()) root["variant"] = variantId.str();
   root["kernel_name"] = artifact.kernelName;
   root["kernel_type"] = std::string(kernelKindToString(artifact.kernelKind));
   root["soc"] = artifact.socVersion;
@@ -585,6 +641,22 @@ static llvm::Error writeBestConfigJson(const std::string &path,
   for (const auto &kv : shape)
     shapeObj[kv.first] = kv.second;
   root["shape"] = std::move(shapeObj);
+
+  if (!allVariants.empty()) {
+    llvm::json::Array arr;
+    for (const auto &v : allVariants) {
+      llvm::json::Object entry;
+      entry["variant"] = v.id;
+      entry["kernel_name"] = v.kernelName;
+      entry["passed"] = v.passed;
+      entry["cycles"] = v.cycles;
+      llvm::json::Object cfg;
+      for (auto &kv : v.config) cfg[kv.first] = kv.second;
+      entry["config"] = std::move(cfg);
+      arr.push_back(std::move(entry));
+    }
+    root["all_variants"] = std::move(arr);
+  }
 
   std::error_code ec;
   llvm::raw_fd_ostream os(path, ec);
@@ -627,11 +699,39 @@ static std::vector<SearchResult> runSearch(
 
   int total = static_cast<int>(combos.size());
   std::vector<SearchResult> results;
+  int pruned = 0;
   ExecutionSession session(ExecutionBackendKind::Simulation);
   for (int ci = 0; ci < total; ++ci) {
     std::map<std::string, int64_t> vars = shape;
     for (size_t si = 0; si < search_vars.size(); ++si)
       vars[search_vars[si].name] = combos[ci][si];
+
+    // Prune nonsensical tile-size combos: an inner tile ("<NAME>_SUB") may not
+    // exceed its outer tile ("<NAME>").
+    bool bad = false;
+    for (auto& kv : vars) {
+      if (kv.first.size() > 4 &&
+          kv.first.compare(kv.first.size() - 4, 4, "_SUB") == 0) {
+        auto it = vars.find(kv.first.substr(0, kv.first.size() - 4));
+        if (it != vars.end() && kv.second > it->second) { bad = true; break; }
+      }
+    }
+    if (bad) { ++pruned; continue; }
+
+    // UB-budget prune: evaluate ub_cost_bytes_expr under this combo's tiling
+    // params (+ shape keys, already in `vars`) and drop combos whose peak UB
+    // cost exceeds the SoC pool. Pre-2026-05-14 this was unbounded and the
+    // search could pick a combo that silently overflows the bump allocator
+    // and produces all-zero output. See plan
+    // docs/superpowers/plans/2026-05-14-ub-aware-tiling-cost.zh.md.
+    if (ts.ub_budget_bytes > 0 && !ts.ub_cost_bytes_exprs.empty()) {
+      int64_t peak = 0;
+      for (auto &expr : ts.ub_cost_bytes_exprs) {
+        int64_t v = evalBlockExpr(expr, vars);
+        if (v > peak) peak = v;
+      }
+      if (2 * peak > ts.ub_budget_bytes) { ++pruned; continue; }
+    }
 
     std::vector<std::pair<std::string, int64_t>> param_vals;
     std::vector<std::string> param_types;
@@ -669,6 +769,27 @@ static std::vector<SearchResult> runSearch(
 
     int64_t block_dim = ts.block_dim_expr.empty() ? 1
                         : evalBlockDimExpr(ts.block_dim_expr, vars);
+
+    // Prune combos whose block_dim exceeds the simulator core count.
+    // camodel only models ~32 cores; with block_dim > that, blocks past the
+    // core count are silently dropped (their slice of the output stays zero),
+    // so the result is wrong. Real hardware schedules in waves and would be
+    // fine, so this gate only matters under sim. Override via env if needed.
+    int64_t simMaxBlockDim = 32;
+    if (const char *env = std::getenv("AUTOTUNER_SIM_MAX_BLOCK_DIM"))
+      simMaxBlockDim = std::strtoll(env, nullptr, 10);
+    if (block_dim > simMaxBlockDim) {
+      llvm::outs() << "[" << (ci + 1) << "/" << total << "]";
+      for (auto& kv : param_vals)
+        if (kv.first.compare(0, 4, "dim_") != 0)
+          llvm::outs() << " " << kv.first << "=" << kv.second;
+      llvm::outs() << " block_dim=" << block_dim
+                   << " PRUNED (block_dim > " << simMaxBlockDim
+                   << ", camodel core limit)\n";
+      llvm::outs().flush();
+      ++pruned;
+      continue;
+    }
 
     llvm::outs() << "[" << (ci + 1) << "/" << total << "]";
     for (auto& kv : param_vals)
@@ -767,6 +888,9 @@ static std::vector<SearchResult> runSearch(
     llvm::outs().flush();
     results.push_back(sr);
   }
+  if (pruned)
+    llvm::errs() << "Pruned " << pruned << " of " << total
+                 << " tiling combos (inner-tile > outer-tile, or block_dim > sim core count)\n";
   return results;
 }
 
@@ -777,6 +901,157 @@ int main(int argc, char** argv) {
 
   // Note: _Exit() calls below bypass destructors to avoid simulator background
   // thread race on process exit (same reason as sim-validator tool).
+
+  // P3: --family mode. Parse <kid>_family.json, loop variants, run search
+  // each, cross-variant argmin. Single-space (--space) path follows below.
+  if (!FamilyFile.empty() && !SpaceFile.empty()) {
+    llvm::errs() << "Error: --space and --family are mutually exclusive\n";
+    _Exit(1);
+  }
+  if (!FamilyFile.empty()) {
+    auto bufOr = llvm::MemoryBuffer::getFile(FamilyFile, /*IsText=*/true);
+    if (!bufOr) {
+      llvm::errs() << "Error: cannot read family file: " << FamilyFile << "\n";
+      _Exit(1);
+    }
+    auto parsed = llvm::json::parse((*bufOr)->getBuffer());
+    if (!parsed) {
+      llvm::errs() << "Error: family.json parse: "
+                   << llvm::toString(parsed.takeError()) << "\n";
+      _Exit(1);
+    }
+    auto *familyObj = parsed->getAsObject();
+    if (!familyObj) { llvm::errs() << "Error: family.json: expected object\n"; _Exit(1); }
+    auto *variants = familyObj->getArray("variants");
+    if (!variants || variants->empty()) {
+      llvm::errs() << "Error: family.json: missing or empty 'variants'\n";
+      _Exit(1);
+    }
+    llvm::SmallString<256> familyDir(FamilyFile.getValue());
+    llvm::sys::path::remove_filename(familyDir);
+
+    struct Slot {
+      std::string variantId;
+      TilingSpace ts;
+      KernelArtifact artifact;
+      std::vector<SearchResult> results;
+      SearchResult best;
+      std::map<std::string, int64_t> shape;
+      bool found = false;
+    };
+    std::vector<Slot> slots;
+
+    for (auto &v : *variants) {
+      auto *vobj = v.getAsObject();
+      if (!vobj) continue;
+      auto idStr = vobj->getString("id");
+      auto spaceFileStr = vobj->getString("space_file");
+      if (!idStr || !spaceFileStr) continue;
+
+      llvm::SmallString<256> spacePath = familyDir;
+      llvm::sys::path::append(spacePath, spaceFileStr->str());
+      SpaceFile = spacePath.str().str();
+
+      auto ts_or = loadTilingSpace(SpaceFile);
+      if (!ts_or) {
+        llvm::errs() << "Error loading " << SpaceFile << ": "
+                     << llvm::toString(ts_or.takeError()) << "\n";
+        _Exit(1);
+      }
+      Slot slot;
+      slot.variantId = idStr->str();
+      slot.ts = std::move(*ts_or);
+
+      auto artifactOr = prepareArtifact(slot.ts);
+      if (!artifactOr) {
+        llvm::errs() << "Error prepareArtifact(" << slot.variantId << "): "
+                     << llvm::toString(artifactOr.takeError()) << "\n";
+        _Exit(1);
+      }
+      slot.artifact = std::move(*artifactOr);
+      slot.ts.kernel_name = slot.artifact.kernelName.empty()
+                              ? slot.ts.kernel_name
+                              : slot.artifact.kernelName;
+      slot.ts.kernel_type = std::string(kernelKindToString(slot.artifact.kernelKind));
+      slot.ts.soc = slot.artifact.socVersion;
+      slot.shape = parseKV(ShapeStr);
+
+      SearchInputs si;
+      si.inputFiles = splitComma(InputFiles);
+      si.expectedFile = ExpectedFile;
+      si.shape = slot.shape;
+      si.atol = Atol;
+      si.rtol = Rtol;
+
+      llvm::outs() << "Searching " << slot.ts.kernel_name << " on "
+                   << slot.ts.soc << " (variant " << slot.variantId << ")\n";
+      slot.results = runSearch(slot.ts, slot.shape, slot.artifact, si);
+      std::vector<SearchResult*> passed;
+      for (auto &r : slot.results) if (r.passed) passed.push_back(&r);
+      if (!passed.empty()) {
+        std::stable_sort(passed.begin(), passed.end(),
+                         [](SearchResult* a, SearchResult* b) {
+          if (a->cycle_count < 0) return false;
+          if (b->cycle_count < 0) return true;
+          return a->cycle_count < b->cycle_count;
+        });
+        slot.best = *passed[0];
+        slot.found = true;
+      }
+      slots.push_back(std::move(slot));
+    }
+
+    Slot *winner = nullptr;
+    for (auto &s : slots) {
+      if (!s.found) continue;
+      if (!winner || s.best.cycle_count < winner->best.cycle_count) winner = &s;
+    }
+    if (!winner) {
+      llvm::errs() << "Error: no variant produced a passing configuration\n";
+      _Exit(1);
+    }
+
+    llvm::outs() << "\nBest variant: " << winner->variantId
+                 << " kernel=" << winner->ts.kernel_name
+                 << " cycles=" << winner->best.cycle_count
+                 << " max_diff=" << winner->best.max_abs_diff << "\n";
+
+    llvm::SmallVector<VariantSummary> summary;
+    for (auto &s : slots) {
+      VariantSummary vs;
+      vs.id = s.variantId;
+      vs.kernelName = s.ts.kernel_name;
+      vs.passed = s.found;
+      vs.cycles = s.found ? s.best.cycle_count : -1;
+      if (s.found) for (auto &kv : s.best.config) vs.config[kv.first] = kv.second;
+      summary.push_back(std::move(vs));
+    }
+
+    if (auto err = writeBestConfigJson(OutputFile, winner->ts, winner->artifact,
+                                       winner->best, winner->shape,
+                                       winner->variantId, summary)) {
+      llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+      _Exit(1);
+    }
+
+    // Cleanup non-winning candidate dirs.
+    for (auto &s : slots)
+      for (auto &r : s.results)
+        if (!r.candidate_dir.empty() && r.candidate_dir != winner->best.candidate_dir) {
+          std::error_code ec;
+          std::filesystem::remove_all(r.candidate_dir, ec);
+        }
+
+    llvm::outs().flush();
+    llvm::errs().flush();
+    _Exit(0);
+  }
+
+  // Single-space mode (legacy).
+  if (SpaceFile.empty()) {
+    llvm::errs() << "Error: either --space or --family must be provided\n";
+    _Exit(1);
+  }
   auto ts_or = loadTilingSpace(SpaceFile);
   if (!ts_or) {
     llvm::errs() << "Error: " << llvm::toString(ts_or.takeError()) << "\n";

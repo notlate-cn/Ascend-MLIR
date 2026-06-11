@@ -13,6 +13,7 @@
  */
 
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
+#include "Conversion/LinalgToAscendC/ComputeConversionHelpers.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -24,10 +25,12 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Utils.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #define GEN_PASS_DECL_LINALGTOASCENDCPASS
 #define GEN_PASS_DEF_LINALGTOASCENDCPASS
@@ -72,36 +75,6 @@ Value computeElementCount(OpBuilder &b, Location loc, Value memrefVal) {
   if (!count)
     count = b.create<arith::ConstantIndexOp>(loc, 1);
   return count;
-}
-
-static Value getEnclosingLoopStepBound(Value value, Operation *anchor) {
-  auto matchesEnclosingStep = [&](Value candidate) -> bool {
-    for (Operation *parent = anchor; parent; parent = parent->getParentOp()) {
-      auto forOp = dyn_cast<scf::ForOp>(parent);
-      if (forOp && candidate == forOp.getStep())
-        return true;
-    }
-    return false;
-  };
-
-  if (auto minOp = value.getDefiningOp<arith::MinSIOp>()) {
-    if (matchesEnclosingStep(minOp.getLhs()))
-      return minOp.getLhs();
-    if (matchesEnclosingStep(minOp.getRhs()))
-      return minOp.getRhs();
-  }
-  if (auto minOp = value.getDefiningOp<arith::MinUIOp>()) {
-    if (matchesEnclosingStep(minOp.getLhs()))
-      return minOp.getLhs();
-    if (matchesEnclosingStep(minOp.getRhs()))
-      return minOp.getRhs();
-  }
-  if (auto minOp = value.getDefiningOp<affine::AffineMinOp>()) {
-    for (Value operand : minOp.getOperands())
-      if (matchesEnclosingStep(operand))
-        return operand;
-  }
-  return value;
 }
 
 static Value getAllocDynamicSizeBound(OpBuilder &b, Location loc, Value size,
@@ -164,13 +137,26 @@ Value computeAllocByteCount(OpBuilder &b, Location loc,
   return b.create<arith::MulIOp>(loc, count, bytesPerElemVal);
 }
 
-/// Walk through subviews and scf.for iter_args to find the ultimate source.
+/// Walk through subviews, casts, and scf.for iter_args / results to find the
+/// ultimate source.
 static Value resolveToAllocRoot(Value v) {
   const int maxDepth = 20;
   for (int i = 0; i < maxDepth; ++i) {
     if (auto subview = v.getDefiningOp<memref::SubViewOp>()) {
       v = subview.getSource();
       continue;
+    }
+    if (auto castOp = v.getDefiningOp<memref::CastOp>()) {
+      v = castOp.getSource();
+      continue;
+    }
+    // Result of an scf.for: follow the matching scf.yield operand.
+    if (auto opResult = dyn_cast<OpResult>(v)) {
+      if (auto forOp = dyn_cast<scf::ForOp>(opResult.getOwner())) {
+        unsigned idx = opResult.getResultNumber();
+        v = forOp.getBody()->getTerminator()->getOperand(idx);
+        continue;
+      }
     }
     if (auto blockArg = dyn_cast<BlockArgument>(v)) {
       auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
@@ -236,11 +222,63 @@ static void eraseDeadTBufInitializers(func::FuncOp funcOp) {
   }
 }
 
+void AscendCBufferContext::setLiveTensor(Value memref, Value lt) {
+  allocToLiveTensor[resolveToAllocRoot(memref)] = lt;
+}
+
 //===----------------------------------------------------------------------===//
 // Pass: build context, run data-move and compute conversions
 //===----------------------------------------------------------------------===//
 
 namespace {
+
+// torch.export lowers `relu(x)` (and clamp/min/max) to `arith.select` of an
+// `arith.cmpf` comparing the two select operands.  Rewrite that to
+// `arith.maximumf` / `arith.minimumf` so the compute conversion (which knows
+// max/min, not select+cmpf) can lower it instead of silently dropping it.
+struct SelectToMinMaxPattern : OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rw) const override {
+    if (!isa<FloatType>(sel.getType()))
+      return failure();
+    auto cmp = sel.getCondition().getDefiningOp<arith::CmpFOp>();
+    if (!cmp)
+      return failure();
+    Value tv = sel.getTrueValue(), fv = sel.getFalseValue();
+    bool sameOrder; // true: cmp(tv, fv); false: cmp(fv, tv)
+    if (cmp.getLhs() == tv && cmp.getRhs() == fv)
+      sameOrder = true;
+    else if (cmp.getLhs() == fv && cmp.getRhs() == tv)
+      sameOrder = false;
+    else
+      return failure();
+    bool gtFamily;
+    switch (cmp.getPredicate()) {
+    case arith::CmpFPredicate::OGT:
+    case arith::CmpFPredicate::OGE:
+    case arith::CmpFPredicate::UGT:
+    case arith::CmpFPredicate::UGE:
+      gtFamily = true;
+      break;
+    case arith::CmpFPredicate::OLT:
+    case arith::CmpFPredicate::OLE:
+    case arith::CmpFPredicate::ULT:
+    case arith::CmpFPredicate::ULE:
+      gtFamily = false;
+      break;
+    default:
+      return failure(); // OEQ/ONE/ORD/... -- not a min/max
+    }
+    // sameOrder == gtFamily  <=>  result is max(tv, fv); else min(tv, fv).
+    if (sameOrder == gtFamily)
+      rw.replaceOpWithNewOp<arith::MaximumFOp>(sel, tv, fv);
+    else
+      rw.replaceOpWithNewOp<arith::MinimumFOp>(sel, tv, fv);
+    return success();
+  }
+};
+
 struct LinalgToAscendCPass
     : public ::impl::LinalgToAscendCPassBase<LinalgToAscendCPass> {
 
@@ -248,6 +286,17 @@ struct LinalgToAscendCPass
     func::FuncOp funcOp = getOperation();
     MLIRContext *ctx = funcOp.getContext();
     OpBuilder builder(ctx);
+
+    // Phase -1: normalize select+cmpf min/max idioms (relu = max(x,0) etc.)
+    // before the compute conversion looks at linalg bodies.
+    {
+      RewritePatternSet pats(ctx);
+      pats.add<SelectToMinMaxPattern>(ctx);
+      if (failed(applyPatternsGreedily(funcOp, std::move(pats)))) {
+        signalPassFailure();
+        return;
+      }
+    }
 
     // -----------------------------------------------------------------------
     // Phase 0: Build the shared pipe + one queue per on-chip alloc.
@@ -320,6 +369,21 @@ struct LinalgToAscendCPass
       return;
     }
     eraseDeadTBufInitializers(funcOp);
+
+    // -----------------------------------------------------------------------
+    // Phase 2.5: Run LICM on inner (non-parallel) scf.for loops only.
+    // The VECCALC init_buffer len depends on DimOps created inside the inner
+    // for loop; LICM hoists those DimOps/arith ops to the outer for body,
+    // making the init_buffer's operands dominate the inner for, so that
+    // HoistOpPattern (Phase 3) can then hoist the init_buffer to the outer
+    // for.  We intentionally skip the outermost parallel for (ascendc.parallel
+    // attr) so that VECIN/VECOUT init_buffers already correctly placed inside
+    // the parallel for are not moved past the block-guard boundary.
+    // -----------------------------------------------------------------------
+    funcOp.walk([](scf::ForOp forOp) {
+      if (!forOp->hasAttr("ascendc.parallel"))
+        moveLoopInvariantCode(cast<LoopLikeOpInterface>(forOp.getOperation()));
+    });
 
     // -----------------------------------------------------------------------
     // Phase 3: Hoist pipe/queue/tbuf/init_buffer to entry block wherever

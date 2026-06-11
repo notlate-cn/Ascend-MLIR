@@ -13,10 +13,14 @@
 #include "Conversion/AscendCFoldConcatAlloc/AscendCFoldConcatAllocPass.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
 #include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
+#include "Conversion/AscendCRCoreCombine/AscendCRCoreCombinePass.h"
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 #include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
+#include "Conversion/AutoFuse/AutoFusePasses.h"
+#include "Conversion/LowerNonLinalgOps/LowerNonLinalgOpsPass.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

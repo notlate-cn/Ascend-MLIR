@@ -36,7 +36,15 @@ static bool hasPositiveShape(llvm::ArrayRef<int64_t> shape) {
 
 static bool isValidBiasShape(llvm::ArrayRef<int64_t> biasShape,
                              int64_t expectedN) {
-  return biasShape.size() == 1 && biasShape[0] == expectedN;
+  // Accept rank-1 [N] or rank-2 [1, N] / [N, 1] (the latter when the source
+  // bias was `tensor<1xNxf32>` and only the body unit dim was collapsed; the
+  // matmul bias intrinsic treats the buffer as 1D of length N regardless).
+  if (biasShape.size() == 1)
+    return biasShape[0] == expectedN;
+  if (biasShape.size() == 2)
+    return (biasShape[0] == 1 && biasShape[1] == expectedN) ||
+           (biasShape[0] == expectedN && biasShape[1] == 1);
+  return false;
 }
 
 static llvm::Expected<MatmulLayout> parseMatmulLayout(llvm::StringRef layout,
@@ -60,6 +68,8 @@ parseEpilogueKind(llvm::StringRef epilogueKind) {
     return EpilogueKind::BiasAddRelu;
   if (epilogueKind == "BiasAddLeakyRelu")
     return EpilogueKind::BiasAddLeakyRelu;
+  if (epilogueKind == "Relu")
+    return EpilogueKind::Relu;
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported matmul epilogue kind: %s",
                                  epilogueKind.str().c_str());

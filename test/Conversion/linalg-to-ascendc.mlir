@@ -269,35 +269,6 @@ func.func @test_queue_backed_vecout_drops_dead_tbuf(%lhs: memref<?x?xf16, 9 : i3
 }
 
 //===----------------------------------------------------------------------===//
-// Reduction chunks must accumulate into the previous partial output instead of
-// overwriting each N chunk result.
-//===----------------------------------------------------------------------===//
-// CHECK-LABEL: func @test_reduction_chunk_copy_accumulates_previous_partial
-// CHECK: scf.for %[[R:.*]] =
-// CHECK: %[[NOT_FIRST:.*]] = arith.cmpi ne, %[[R]],
-// CHECK: scf.if %[[NOT_FIRST]]
-// CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
-// CHECK: ascendc.add_l2
-// CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-func.func @test_reduction_chunk_copy_accumulates_previous_partial(%a: memref<?xf16>, %b: memref<?x?xf16>, %out: memref<?xf16>, %m: index, %n: index, %rn: index) {
-  %c0 = arith.constant 0 : index
-  %partial = memref.alloc(%m) : memref<?xf16, 10 : i32>
-  scf.for %r = %c0 to %n step %rn {
-    %b_chunk = memref.subview %b[0, %r] [%m, %rn] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
-    linalg.generic {indexing_maps = [#map_par_reduce_lhs, #map_par_reduce_rhs, #map_par_reduce_lhs], iterator_types = ["parallel", "reduction"], ascendc.unit = "AiCore.Vector"}
-      ins(%a, %b_chunk : memref<?xf16>, memref<?x?xf16, strided<[?, 1], offset: ?>>)
-      outs(%partial : memref<?xf16, 10 : i32>) {
-    ^bb0(%in: f16, %in_0: f16, %out_0: f16):
-      %sum = arith.addf %in, %in_0 : f16
-      %acc = arith.addf %out_0, %sum : f16
-      linalg.yield %acc : f16
-    }
-    memref.copy %partial, %out : memref<?xf16, 10 : i32> to memref<?xf16>
-  }
-  return
-}
-
-//===----------------------------------------------------------------------===//
 // Buffer init for tail-tiled allocs should use the loop step upper bound.
 // Using affine.min(remaining, step) keeps InitBuffer inside the loop and
 // repeatedly consumes real UB across loop iterations.

@@ -1,0 +1,7 @@
+{
+  "kernel_group0": {
+    "XBLOCK": 128,
+    "XBLOCK_SUB": 16,
+    "_block_dim": 8
+  }
+}

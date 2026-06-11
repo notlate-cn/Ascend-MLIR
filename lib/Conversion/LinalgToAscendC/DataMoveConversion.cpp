@@ -12,6 +12,7 @@
  * License.
  */
 
+#include "Conversion/LinalgToAscendC/ComputeConversionHelpers.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -24,6 +25,7 @@
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #define DEBUG_TYPE "linalg-to-ascendc-datamove"
 
@@ -39,6 +41,169 @@ static Value emitDim(OpBuilder &b, Location loc, Value memref, int64_t d) {
   if (!ShapedType::isDynamic(mrt.getShape()[d]))
     return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[d]);
   return b.create<memref::DimOp>(loc, memref, d);
+}
+
+// Helper: detect a 2-D memref whose rows may be non-contiguous in memory — a
+// "strided" subview such as the transposed-operand tile x[r0:r0+R, c0:c0+C] of
+// a wider buffer (row stride = the wider buffer's inner dim, not C).  Returns
+// true and sets `rowStride` (in elements) when the row stride is statically
+// known and a row gap is possible; a plain contiguous memref returns false (the
+// flat DataCopy fast path applies).  Only the 2-D case is handled here.
+// Returns true when the memref is a 2-D row-strided source/dest that needs
+// per-row copies (rows not packed in memory).  Two flavors hit this:
+//   - static stride that's known to differ from the column extent
+//     (e.g. an RBLOCK reduction-split x[A,R] tile, or a transposed operand);
+//   - dynamic stride (e.g. a FullLoad leading-reduce slice of x[D0,D1] where
+//     shape symbolization hasn't pinned D1 — the runtime stride may exceed
+//     cols).  Caller must extract the runtime stride via
+//     memref.extract_strided_metadata.
+//
+// A plain contiguous memref (stride[0] statically == cols) returns false so
+// the flat-DataCopy fast path applies.  Only the 2-D case is handled here.
+static bool isMaybeRowStridedND(MemRefType mrt) {
+  unsigned r = mrt.getRank();
+  if (r < 2)
+    return false;
+  // Only fire when the type carries an explicit StridedLayoutAttr — that's
+  // the marker for "this came from a subview / cast and the rows may not be
+  // packed".  An identity-layout memref<?x?xf32> is contiguous at runtime
+  // (stride[0] = dim 1), even though its dim-0 stride looks dynamic.
+  auto sl = dyn_cast<StridedLayoutAttr>(mrt.getLayout());
+  if (!sl)
+    return false;
+  ArrayRef<int64_t> strides = sl.getStrides();
+  if (strides[r - 1] != 1)
+    return false;
+  // For rank>2, the outer dims must nest contiguously so they flatten to
+  // uniform-stride rows: stride[d] == stride[d+1]*dim[d+1] (statically).
+  for (unsigned d = 0; d + 2 < r; ++d) {
+    int64_t sd = strides[d], sd1 = strides[d + 1], dim1 = mrt.getDimSize(d + 1);
+    if (ShapedType::isDynamic(sd) || ShapedType::isDynamic(sd1) ||
+        ShapedType::isDynamic(dim1) || sd != sd1 * dim1)
+      return false; // can't safely flatten the outer dims into rows
+  }
+  int64_t rowStride = strides[r - 2];
+  if (ShapedType::isDynamic(rowStride))
+    return true; // conservatively assume strided
+  int64_t cols = mrt.getDimSize(r - 1);
+  if (!ShapedType::isDynamic(cols) && cols == rowStride)
+    return false; // provably contiguous (inner run packed)
+  return true;
+}
+
+// Get an index Value for the row stride of a (possibly dynamic-stride) 2-D
+// strided memref.  Static stride → ConstantIndexOp.  Dynamic stride: the
+// producer is a memref.subview with unit strides over a row-major source
+// memref; the row stride is the source's dim 1.  Pulling from the parent
+// directly (instead of memref.extract_strided_metadata on the subview)
+// keeps the subview from being kept alive past LinalgToAscendC — the
+// downstream afir-translate has no printer for memref.subview.
+static Value materializeRowStride(OpBuilder &b, Location loc, Value memref) {
+  auto mrt = cast<MemRefType>(memref.getType());
+  unsigned r = mrt.getRank();
+  auto sl = cast<StridedLayoutAttr>(mrt.getLayout());
+  ArrayRef<int64_t> strides = sl.getStrides();
+  // Row stride is the second-to-last (inner-run) stride; flattened outer dims
+  // share it (verified contiguous-nested in isMaybeRowStridedND).
+  if (!ShapedType::isDynamic(strides[r - 2]))
+    return b.create<arith::ConstantIndexOp>(loc, strides[r - 2]);
+  // Release-safe barriers (were debug-only `assert`s): each marks a strided
+  // pattern this helper does not yet handle and would otherwise compute a wrong
+  // row stride (= wrong GM address) silently in a release build.  The handled
+  // case (rank-2, unit-stride subview) is unaffected.
+  auto subview = memref.getDefiningOp<memref::SubViewOp>();
+  if (!subview)
+    llvm::report_fatal_error("LinalgToAscendC: dynamic-stride strided memref "
+                             "must come from a memref.subview "
+                             "(materializeRowStride extension needed)");
+  for (OpFoldResult s : subview.getMixedStrides()) {
+    auto attr = dyn_cast<Attribute>(s);
+    if (!attr || cast<IntegerAttr>(attr).getInt() != 1)
+      llvm::report_fatal_error("LinalgToAscendC: non-unit subview stride "
+                               "(materializeRowStride extension needed)");
+  }
+  Value src = subview.getSource();
+  auto srcMrt = cast<MemRefType>(src.getType());
+  if (srcMrt.getRank() != 2)
+    llvm::report_fatal_error("LinalgToAscendC: rank>2 strided-copy source "
+                             "(materializeRowStride extension needed)");
+  return b.create<memref::DimOp>(loc, src, 1);
+}
+
+// Get an index Value for `dim` of a possibly-dynamic 2-D strided subview.
+// Prefers the SubViewOp's mixed size at that index (an Attribute constant or
+// the SSA value passed to the subview) over `memref.dim` on the subview
+// result — the latter keeps the subview alive past LinalgToAscendC.
+static Value materializeSubviewDim(OpBuilder &b, Location loc, Value memref,
+                                    unsigned dim) {
+  auto mrt = cast<MemRefType>(memref.getType());
+  if (!ShapedType::isDynamic(mrt.getShape()[dim]))
+    return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[dim]);
+  if (auto subview = memref.getDefiningOp<memref::SubViewOp>()) {
+    OpFoldResult s = subview.getMixedSizes()[dim];
+    if (auto attr = dyn_cast<Attribute>(s))
+      return b.create<arith::ConstantIndexOp>(loc,
+                                              cast<IntegerAttr>(attr).getInt());
+    return cast<Value>(s);
+  }
+  return b.create<memref::DimOp>(loc, memref, dim);
+}
+
+// Number of "rows" when an inner-axis-tiled subview is flattened for a strided
+// copy: the product of all dims except the innermost (which is the packed run).
+// The outer dims nest contiguously (isMaybeRowStridedND guaranteed it), so the
+// flattened rows share a single uniform row stride.
+static Value materializeFlatRows(OpBuilder &b, Location loc, Value memref) {
+  unsigned r = cast<MemRefType>(memref.getType()).getRank();
+  Value rows = b.create<arith::ConstantIndexOp>(loc, 1);
+  for (unsigned d = 0; d + 1 < r; ++d)
+    rows = b.create<arith::MulIOp>(loc, rows,
+                                   materializeSubviewDim(b, loc, memref, d));
+  return rows;
+}
+
+// Emit a GM → VECIN copy of a 2-D row-strided source: one plain DataCopy per
+// row (src row i at srcGt[i*rowStride], dst row i packed at dstLt[i*cols]).
+// Uses only the proven GetPhyAddr / DataCopy path (no strided DataCopyPad,
+// which this AscendC/sim build does not handle for GM→UB).  Requires
+// cols*sizeof(elem) % 32 == 0 — the tiling-space generator is expected to
+// honour that for inner tile sizes feeding a transposed operand.
+static void emitStridedGmToVecinDataCopy(OpBuilder &b, Location loc, Type elemTy,
+                                          Value dstLt, Value srcGt, Value rows,
+                                          Value cols, Value rowStride) {
+  std::string ets = cppScalarName(elemTy);
+  std::string tmpl =
+      "{\n"
+      "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
+      "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
+      "    _afir_gt.SetGlobalBuffer($1.GetPhyAddr(_afir_i * (uint32_t)$4));\n"
+      "    AscendC::DataCopy($0[_afir_i * (uint32_t)$3], _afir_gt, (uint32_t)$3);\n"
+      "  }\n"
+      "}";
+  b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
+                                ValueRange({dstLt, srcGt, rows, cols,
+                                            rowStride}));
+}
+
+// Emit a VECOUT/VECCALC → GM store of a 2-D row-strided destination: one plain
+// DataCopy per row (src row i packed at srcLt[i*cols], dst row i at
+// dstGt[i*rowStride]).  Symmetric to emitStridedGmToVecinDataCopy.  Same
+// cols*sizeof(elem) % 32 == 0 requirement.
+static void emitStridedVecToGmDataCopy(OpBuilder &b, Location loc, Type elemTy,
+                                        Value dstGt, Value srcLt, Value rows,
+                                        Value cols, Value rowStride) {
+  std::string ets = cppScalarName(elemTy);
+  std::string tmpl =
+      "{\n"
+      "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
+      "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
+      "    _afir_gt.SetGlobalBuffer($0.GetPhyAddr(_afir_i * (uint32_t)$4));\n"
+      "    AscendC::DataCopy(_afir_gt, $1[_afir_i * (uint32_t)$3], (uint32_t)$3);\n"
+      "  }\n"
+      "}";
+  b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
+                                ValueRange({dstGt, srcLt, rows, cols,
+                                            rowStride}));
 }
 
 // Helper: cast an index value to i16 (signless, compatible with ui16 field).
@@ -93,121 +258,6 @@ static Value getRootAlloc(Value v) {
   while (auto subview = v.getDefiningOp<memref::SubViewOp>())
     v = subview.getSource();
   return v;
-}
-
-static bool isValueOffset(OpFoldResult ofr, Value value) {
-  if (auto offsetValue = dyn_cast<Value>(ofr))
-    return offsetValue == value;
-  return false;
-}
-
-static bool genericHasReductionIterator(linalg::GenericOp genericOp) {
-  return llvm::any_of(genericOp.getIteratorTypesArray(),
-                      [](utils::IteratorType iteratorType) {
-                        return iteratorType == utils::IteratorType::reduction;
-                      });
-}
-
-static linalg::GenericOp findReductionGenericWriting(Value memref) {
-  Value root = getRootAlloc(memref);
-  for (Operation *user : root.getUsers()) {
-    auto genericOp = dyn_cast<linalg::GenericOp>(user);
-    if (!genericOp || !genericHasReductionIterator(genericOp))
-      continue;
-    for (Value init : genericOp.getDpsInits()) {
-      if (getRootAlloc(init) == root)
-        return genericOp;
-    }
-  }
-  return nullptr;
-}
-
-static scf::ForOp findReductionTileLoop(linalg::GenericOp genericOp) {
-  if (!genericOp)
-    return nullptr;
-
-  auto iterTypes = genericOp.getIteratorTypesArray();
-  auto maps = genericOp.getIndexingMapsArray();
-  unsigned iterRank = iterTypes.size();
-  SmallVector<unsigned> reductionDims;
-  for (unsigned d = 0; d < iterRank; ++d)
-    if (iterTypes[d] == utils::IteratorType::reduction)
-      reductionDims.push_back(d);
-  if (reductionDims.empty())
-    return nullptr;
-
-  SmallVector<scf::ForOp> enclosingLoops;
-  for (Operation *parent = genericOp->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto forOp = dyn_cast<scf::ForOp>(parent))
-      enclosingLoops.push_back(forOp);
-  }
-
-  for (scf::ForOp forOp : enclosingLoops) {
-    Value iv = forOp.getInductionVar();
-    for (unsigned inputIdx = 0; inputIdx < genericOp.getNumDpsInputs();
-         ++inputIdx) {
-      AffineMap map = maps[inputIdx];
-      if (map.getNumResults() != iterRank)
-        continue;
-      Value input = genericOp.getDpsInputOperand(inputIdx)->get();
-      auto subview = input.getDefiningOp<memref::SubViewOp>();
-      if (!subview)
-        continue;
-      SmallVector<OpFoldResult> offsets = subview.getMixedOffsets();
-      for (unsigned reductionDim : reductionDims) {
-        if (reductionDim < offsets.size() &&
-            isValueOffset(offsets[reductionDim], iv))
-          return forOp;
-      }
-    }
-  }
-
-  return nullptr;
-}
-
-static void emitAddPreviousReductionPartial(OpBuilder &builder, Location loc,
-                                            MLIRContext *mlirCtx,
-                                            AscendCBufferContext &ctx,
-                                            scf::ForOp reductionLoop,
-                                            Value dst, Value srcLt,
-                                            Value count, Type elemType) {
-  if (!reductionLoop || !count)
-    return;
-
-  Value isNotFirst = builder.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::ne, reductionLoop.getInductionVar(),
-      reductionLoop.getLowerBound());
-  auto ifOp = builder.create<scf::IfOp>(loc, isNotFirst, /*withElseRegion=*/false);
-
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-
-  Value dstGt =
-      builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
-  builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
-                                                 /*size=*/Value{});
-
-  unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
-  Value byteSize = builder.create<arith::MulIOp>(
-      loc, count, builder.create<arith::ConstantIndexOp>(loc, elemBytes));
-  Value oldTbuf =
-      builder.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECIN));
-  builder.create<TPipeInitBufferOp>(loc, ctx.pipe, oldTbuf, byteSize);
-  Value oldQueue =
-      builder.create<QueueOp>(loc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
-  Value depth = builder.create<arith::ConstantOp>(
-      loc, builder.getI32IntegerAttr(1));
-  builder.create<TPipeInitQueueOp>(loc, ctx.pipe, oldQueue, depth, byteSize);
-
-  Value oldLt = builder.create<TQueBindAllocTensorOp>(
-      loc, LocalTensorType::get(elemType), oldQueue);
-  builder.create<DataCopyL2Op>(loc, oldLt, dstGt, count);
-  builder.create<TQueBindEnqueTensorOp>(loc, oldQueue, oldLt);
-  Value oldDequeued = builder.create<TQueBindDequeTensorOp>(
-      loc, LocalTensorType::get(elemType), oldQueue);
-  builder.create<AddL2Op>(loc, srcLt, srcLt, oldDequeued, count);
-  builder.create<TQueBindFreeTensorOp>(loc, oldQueue, oldDequeued);
 }
 
 LogicalResult convertDataMove(func::FuncOp funcOp,
@@ -300,13 +350,27 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
           LocalTensorType::get(cast<MemRefType>(dst.getType()).getElementType());
       Value dstLt =
           builder.create<TQueBindAllocTensorOp>(loc, dstLtType, dstQueue);
+      auto srcMrt = cast<MemRefType>(src.getType());
       Value srcGt = builder.create<GlobalTensorOp>(
-          loc,
-          GlobalTensorType::get(cast<MemRefType>(src.getType()).getElementType()));
+          loc, GlobalTensorType::get(srcMrt.getElementType()));
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, src,
                                                      /*size=*/Value{});
-      Value count = computeElementCount(builder, loc, dst);
-      builder.create<DataCopyL2Op>(loc, dstLt, srcGt, count);
+      if (isMaybeRowStridedND(srcMrt)) {
+        // Strided source — copy row by row, packing into the VECIN tile.
+        // Triggers for absorbed-transpose operand tiles, RBLOCK reduction-
+        // split chunks, FullLoad leading-reduce slices, and inner-axis-tiled
+        // elementwise inputs (e.g. [8,2,XBLOCK] of [8,2,192]).  A flat DataCopy
+        // of rows*cols elements would read contiguous GM (the wrong rows).
+        Value rowStride = materializeRowStride(builder, loc, src);
+        Value rows = materializeFlatRows(builder, loc, src);
+        Value cols =
+            materializeSubviewDim(builder, loc, src, srcMrt.getRank() - 1);
+        emitStridedGmToVecinDataCopy(builder, loc, srcMrt.getElementType(),
+                                     dstLt, srcGt, rows, cols, rowStride);
+      } else {
+        Value count = computeElementCount(builder, loc, dst);
+        builder.create<DataCopyL2Op>(loc, dstLt, srcGt, count);
+      }
       builder.create<TQueBindEnqueTensorOp>(loc, dstQueue, dstLt);
 
       // Immediately deque so the local_tensor is available as a live value
@@ -517,25 +581,62 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
         copyOp.emitError("missing queue for VECOUT buffer");
         return failure();
       }
+      auto dstMrt = cast<MemRefType>(dst.getType());
       auto srcLtType =
           LocalTensorType::get(cast<MemRefType>(src.getType()).getElementType());
       Value srcLt =
           builder.create<TQueBindDequeTensorOp>(loc, srcLtType, srcQueue);
       Value dstGt = builder.create<GlobalTensorOp>(
-          loc,
-          GlobalTensorType::get(cast<MemRefType>(dst.getType()).getElementType()));
+          loc, GlobalTensorType::get(dstMrt.getElementType()));
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
+                                                     /*size=*/Value{});
+      if (isMaybeRowStridedND(dstMrt)) {
+        // Strided destination — store row by row; a flat DataCopy would
+        // write contiguous GM (the wrong rows).  Handles inner-axis-tiled
+        // elementwise outputs (e.g. [8,2,XBLOCK] of [8,2,192]) too.
+        Value rowStride = materializeRowStride(builder, loc, dst);
+        Value rows = materializeFlatRows(builder, loc, dst);
+        Value cols =
+            materializeSubviewDim(builder, loc, dst, dstMrt.getRank() - 1);
+        emitStridedVecToGmDataCopy(builder, loc, dstMrt.getElementType(), dstGt,
+                                   srcLt, rows, cols, rowStride);
+      } else {
+        Value count = computeElementCount(builder, loc, src);
+        builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
+      }
+      builder.create<TQueBindFreeTensorOp>(loc, srcQueue, srcLt);
+      copyOp.erase();
+      continue;
+    }
+
+    // VECCALC(11) → GM(0): the result-store of a reduction-split accumulator.
+    // The accumulator is a TBuf-backed local tensor (not queued); the compute
+    // conversion's fill pre-pass registers it as `src`'s live tensor and writes
+    // it via the same TBuf, so a fresh TBufGetTensor on that same TBuf is the
+    // correct source here (data_copy reads it after the reduction loop).
+    if (srcMs == 11 && dstMs == 0) {
+      auto elemTy = cast<MemRefType>(src.getType()).getElementType();
+      Value srcLt = ctx.getLiveTensor(src);
+      if (!srcLt) {
+        Value tbuf = ctx.getTBuf(src);
+        if (!tbuf) {
+          copyOp.emitError("missing TBuf for VECCALC accumulator");
+          return failure();
+        }
+        srcLt = builder.create<TBufGetTensorOp>(
+            loc, LocalTensorType::get(elemTy), tbuf, /*len=*/Value{});
+      }
+      Value dstGt =
+          builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemTy));
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
                                                      /*size=*/Value{});
       Value count = computeElementCount(builder, loc, src);
-      if (linalg::GenericOp producer = findReductionGenericWriting(src)) {
-        if (scf::ForOp reductionLoop = findReductionTileLoop(producer)) {
-          emitAddPreviousReductionPartial(
-              builder, loc, mlirCtx, ctx, reductionLoop, dst, srcLt, count,
-              cast<MemRefType>(src.getType()).getElementType());
-        }
-      }
+      // The accumulator was just written by vector ops in the RBLOCK loop; the
+      // DataCopy below runs on the MTE3 pipe and would otherwise race ahead of
+      // those writes (the queued VECOUT path gets this sync from EnQue/DeQue,
+      // but the TBuf accumulator has no queue).  Barrier all pipes first.
+      builder.create<PipeBarrierOp>(loc, Pipe::PIPE_ALL);
       builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
-      builder.create<TQueBindFreeTensorOp>(loc, srcQueue, srcLt);
       copyOp.erase();
       continue;
     }

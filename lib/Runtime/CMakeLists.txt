@@ -20,11 +20,11 @@ add_mlir_library(AscendCRuntime
   Execution/LaunchTrace.cpp
   Execution/NpuBackend.cpp
   Execution/NativeExecutionRunner.cpp
+  Execution/HostLaunchHelper.cpp
   Execution/ResourceScheduler.cpp
   Execution/SessionHandle.cpp
   Execution/SimBackend.cpp
   Execution/TaskGraph.cpp
-  Mix/AscendCMixCompiler.cpp
   Mix/MixAbi.cpp
   Mix/MixAbiExtractor.cpp
   Mix/MixCompileMetadata.cpp
@@ -140,3 +140,5 @@ else()
     ${CMAKE_DL_LIBS}
   )
 endif()
+
+add_subdirectory(AclnnBackend)

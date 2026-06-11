@@ -1,6 +1,7 @@
 add_mlir_library(CannKernelTranslation
   CannTranslation.cpp
   AfirOpEmitters.cpp
+  UbCostExpr.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include
@@ -11,5 +12,7 @@ add_mlir_library(CannKernelTranslation
   MLIRAsc
   MLIRTargetAsc
   MLIRIR
+  AFIRSymbolicShape
+  MLIRAutoFuse
   LLVMSupport
 )

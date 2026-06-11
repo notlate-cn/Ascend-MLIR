@@ -61,4 +61,57 @@ def LinalgMark : Pass<"linalg-mark", "mlir::ModuleOp"> {
   let constructor = "mlir::createLinalgMarkPass()";
 }
 
+def AFIRSymbolizeShapesPass : Pass<"afir-symbolize-shapes", "mlir::func::FuncOp"> {
+  let summary = "Attach symbolic-dimension expressions to dynamic tensors";
+  let description = [{
+    Mints a symbol for every `?` dimension of the function's block arguments and
+    propagates a symbolic shape (a SymExpr per dim) through linalg structured
+    ops and a few tensor reshape/alloc ops.  Writes `afir.symbolic_shapes` on
+    each op (one comma-separated SymExpr list per result) and `afir.dim_symbols`
+    on the function.  Ops it cannot symbolize get no attr; the gap propagates
+    forward.  Does nothing for functions whose signature is fully static.
+  }];
+  let constructor = "mlir::createAFIRSymbolizeShapesPass()";
+}
+
+def AFIRSymbolicDimCSEPass : Pass<"afir-symbolic-dim-cse", "mlir::func::FuncOp"> {
+  let summary = "Merge tensor.dim ops that denote the same shape symbol";
+  let description = [{
+    Runs after `afir-symbolize-shapes`.  Two `tensor.dim` ops can compute the
+    same integer while querying different SSA values (e.g. `tensor.dim %arg0, 0`
+    and `tensor.dim %1, 0` where both dim-0s are symbol `s0`); stock CSE cannot
+    merge them because the operands differ.  Using `afir.dim_symbols` and the
+    serialized `afir.symbolic_shape(s)` attrs, this pass groups such ops by
+    symbol id and collapses each group (size >= 2) to a single canonical
+    `tensor.dim` on the symbol's root block argument, placed at the entry block
+    so it dominates every use.  Constant or compound (`s0*s1`) dims are left for
+    plain canonicalization.  No-op when `afir.dim_symbols` is absent.
+  }];
+  let constructor = "mlir::createAFIRSymbolicDimCSEPass()";
+}
+
+def AFIRVerifySymbolicShapesPass : Pass<"afir-verify-symbolic-shapes", "mlir::func::FuncOp"> {
+  let summary = "Verify the afir.symbolic_shapes / afir.dim_symbols attributes";
+  let description = [{
+    Checks shape arrays match result counts/ranks, symbol ids are in range, and
+    statically-typed dims carry the matching constant.  Emits diagnostics; meant
+    for lit tests.
+  }];
+  let constructor = "mlir::createAFIRVerifySymbolicShapesPass()";
+}
+
+def AFIREmitNetworkJsonPass : Pass<"emit-network-json", "mlir::ModuleOp"> {
+  let summary = "Emit network.json for the coordinator func in the module";
+  let description = [{
+    Walks the (non-private) coordinator func's body, classifies each call by
+    callee `aclnn.op` attribute, and writes network.json (per the network-runner
+    design spec) to the file given by `path`.
+  }];
+  let constructor = "mlir::createAFIREmitNetworkJsonPass()";
+  let options = [
+    Option<"path", "path", "std::string", /*default=*/"\"\"",
+           "Output path for network.json (required)">,
+  ];
+}
+
 #endif // AFIR_TRANSFORMS_PASSES

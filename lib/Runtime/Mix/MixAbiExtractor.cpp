@@ -190,6 +190,12 @@ readFileText(llvm::StringRef path) {
   return bufferOr.get()->getBuffer().str();
 }
 
+// Treat the arg as "referenced" only if at least one use is something other
+// than a pure shape query (memref.dim).  This matters for the dynamic-shape
+// path where a DPS-init operand is otherwise unused except for `memref.dim`
+// queries that drive the cube/vec loop bounds — the host should still elide it
+// from the kernel ABI inputs list (matching how the static-shape path
+// elides it because `%argN` is wholly absent after literal shape inlining).
 static bool isTensorArgReferencedInBody(llvm::StringRef bodyText,
                                         llvm::StringRef argName) {
   const std::string needle = argName.str();
@@ -199,8 +205,18 @@ static bool isTensorArgReferencedInBody(llvm::StringRef bodyText,
     const size_t end = pos + needle.size();
     const bool endsToken =
         end >= bodyText.size() || !llvm::isAlnum(bodyText[end]);
-    if (startsToken && endsToken)
-      return true;
+    if (startsToken && endsToken) {
+      // Find the enclosing line and check whether the use sits inside a
+      // `memref.dim` invocation (text form: "memref.dim %argN, ...").
+      size_t lineStart = bodyText.rfind('\n', pos);
+      lineStart = (lineStart == llvm::StringRef::npos) ? 0 : lineStart + 1;
+      size_t lineEnd = bodyText.find('\n', pos);
+      if (lineEnd == llvm::StringRef::npos)
+        lineEnd = bodyText.size();
+      llvm::StringRef line = bodyText.substr(lineStart, lineEnd - lineStart);
+      if (!line.contains("memref.dim"))
+        return true;
+    }
     pos = bodyText.find(needle, pos + needle.size());
   }
   return false;

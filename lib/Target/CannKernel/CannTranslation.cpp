@@ -4,7 +4,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Target/CannKernel/AfirConfusionTransposeKernelSource.h"
 #include "Target/CannKernel/CannTranslation.h"
+#include "Target/CannKernel/SocSpec.h"
+#include "Target/CannKernel/UbCostExpr.h"
+#include "Conversion/AutoFuse/TilePlan.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/Path.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
@@ -201,6 +209,9 @@ struct SupportedMixKernelConfig {
 
   enum class EpilogueKind {
     Unknown,
+    Identity,    // No activation; AIV does just pass-through DataCopy.  Used
+                 // when the only "epilogue" was bias-add (folded into AIC via
+                 // mm.SetBias) and no further elementwise was fused.
     Relu,
     LeakyRelu,
   };
@@ -517,11 +528,25 @@ static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
 
 static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
   auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
-  if (!numInputsAttr || numInputsAttr.getInt() != 4)
+  if (!numInputsAttr)
+    return false;
+  int64_t numInputs = numInputsAttr.getInt();
+  // Supported layouts:
+  //   - matmul+bias+epilogue (num_inputs=4, 7 args).  Two arg orderings:
+  //       legacy: A(f16,2D), B(f16,2D), bias(f32,1D), init(f32,2D), out, ws, tiling
+  //       cube:   A(f16,2D), B(f16,2D), init(f32,2D), bias(f32,1D), out, ws, tiling
+  //     (the auto-fuse cube path produces the latter because the init
+  //     operand of `linalg.matmul` precedes the bias operand of the trailing
+  //     `linalg.generic` in func-arg order after bufferization)
+  //   - matmul+epilogue, no-bias (num_inputs=3, 6 args):
+  //       A(f16,2D), B(f16,2D), init(f32,2D), out(f32,2D), ws(ui8), tiling
+  if (numInputs != 4 && numInputs != 3)
     return false;
 
   auto args = funcOp.getArguments();
-  if (args.size() != 7)
+  bool hasBias = (numInputs == 4);
+  size_t expectedArgs = hasBias ? 7 : 6;
+  if (args.size() != expectedArgs)
     return false;
 
   MLIRContext *ctx = funcOp.getContext();
@@ -529,20 +554,52 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
   Type f32 = Float32Type::get(ctx);
 
   if (!isRankedMemrefOf(args[0].getType(), 2, f16) ||
-      !isRankedMemrefOf(args[1].getType(), 2, f16) ||
-      !isRankedMemrefOf(args[2].getType(), 1, f32) ||
-      !isRankedMemrefOf(args[3].getType(), 2, f32))
+      !isRankedMemrefOf(args[1].getType(), 2, f16))
     return false;
 
-  auto outputType = dyn_cast<MemRefType>(args[4].getType());
+  // A "bias-like" memref is either rank-1 [N] or rank-2 [1, N] (the latter
+  // appears when the source bias was `tensor<1xNxf32>` and fold-unit-extent
+  // collapsed the unit dim only inside the body, leaving the func arg type
+  // intact).  mm.SetBias() doesn't care about static shape — it treats
+  // biasGM as a 1D buffer of length N regardless.
+  auto isBiasLikeMemref = [&](Type t) {
+    if (isRankedMemrefOf(t, 1, f32)) return true;
+    auto mr = dyn_cast<MemRefType>(t);
+    if (!mr || mr.getRank() != 2 || mr.getElementType() != f32) return false;
+    auto shape = mr.getShape();
+    return shape[0] == 1 || shape[1] == 1;
+  };
+  size_t idx = 2;
+  if (hasBias) {
+    // Accept either order: (bias, init 2D) or (init 2D, bias).
+    bool order1 = isBiasLikeMemref(args[idx].getType()) &&
+                  isRankedMemrefOf(args[idx + 1].getType(), 2, f32) &&
+                  !isBiasLikeMemref(args[idx + 1].getType());
+    bool order2 = isRankedMemrefOf(args[idx].getType(), 2, f32) &&
+                  !isBiasLikeMemref(args[idx].getType()) &&
+                  isBiasLikeMemref(args[idx + 1].getType());
+    if (!order1 && !order2)
+      return false;
+    idx += 2;
+  } else {
+    // No-bias variant: just init (f32, 2D) at args[2].
+    if (!isRankedMemrefOf(args[idx].getType(), 2, f32))
+      return false;
+    ++idx;
+  }
+
+  auto outputType = dyn_cast<MemRefType>(args[idx].getType());
   if (!outputType || outputType.getRank() != 2 ||
       outputType.getElementType() != f32)
     return false;
+  ++idx;
 
-  auto workspaceType = dyn_cast<MemRefType>(args[5].getType());
+  auto workspaceType = dyn_cast<MemRefType>(args[idx].getType());
   if (!workspaceType || !workspaceType.getElementType().isUnsignedInteger(8))
     return false;
-  return isa<emitasc::PyStructType>(args[6].getType());
+  ++idx;
+
+  return isa<emitasc::PyStructType>(args[idx].getType());
 }
 
 static llvm::DenseMap<Operation *, MixPartitionKind>
@@ -1261,6 +1318,12 @@ static bool isSupportedMixVectorMulUser(Operation *user) {
          getTensorStoragePartition(mulOp.getDst()) == MixPartitionKind::Vector;
 }
 
+static bool isSupportedMixVectorMaxUser(Operation *user) {
+  auto maxOp = dyn_cast<ascendc::MaxL2Op>(user);
+  return maxOp &&
+         getTensorStoragePartition(maxOp.getDst()) == MixPartitionKind::Vector;
+}
+
 static FailureOr<SupportedMixKernelConfig::EpilogueKind>
 inferSupportedMixEpilogueKind(func::FuncOp funcOp,
                               const MixPartitionSummary &summary,
@@ -1279,22 +1342,33 @@ inferSupportedMixEpilogueKind(func::FuncOp funcOp,
       return WalkResult::advance();
     if (!hasVectorMax)
       return WalkResult::advance();
-    bool usedByVectorMul =
-        llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMulUser);
-    if (!usedByVectorMul)
-      return WalkResult::advance();
     auto constOp = dupOp.getScalar().getDefiningOp<arith::ConstantOp>();
     if (!constOp)
       return WalkResult::advance();
     auto floatAttr = dyn_cast<FloatAttr>(constOp.getValue());
     if (!floatAttr)
       return WalkResult::advance();
-    leakyReluAlpha = floatAttr.getValue().convertToDouble();
-    epilogueKind =
-        (leakyReluAlpha == 0.0)
-            ? SupportedMixKernelConfig::EpilogueKind::Relu
-            : SupportedMixKernelConfig::EpilogueKind::LeakyRelu;
-    return WalkResult::interrupt();
+    double scalar = floatAttr.getValue().convertToDouble();
+    bool usedByVectorMul =
+        llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMulUser);
+    bool usedByVectorMax =
+        llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMaxUser);
+    if (usedByVectorMul) {
+      // dup(alpha) -> mul lane: LeakyRelu when alpha != 0, Relu when alpha == 0.
+      leakyReluAlpha = scalar;
+      epilogueKind =
+          (scalar == 0.0)
+              ? SupportedMixKernelConfig::EpilogueKind::Relu
+              : SupportedMixKernelConfig::EpilogueKind::LeakyRelu;
+      return WalkResult::interrupt();
+    }
+    if (usedByVectorMax && scalar == 0.0) {
+      // dup(0.0) -> max lane only: pure Relu (no Mul means alpha == 0).
+      leakyReluAlpha = 0.0;
+      epilogueKind = SupportedMixKernelConfig::EpilogueKind::Relu;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
   });
 
   if (epilogueKind == SupportedMixKernelConfig::EpilogueKind::Unknown)
@@ -1318,10 +1392,21 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   config.hasBiasAdd = inferSupportedMixHasBiasAdd(summary);
   auto epilogueKind =
       inferSupportedMixEpilogueKind(funcOp, summary, config.leakyReluAlpha);
-  if (failed(epilogueKind))
-    return failure();
-  config.epilogueKind = *epilogueKind;
-  return config;
+  if (succeeded(epilogueKind)) {
+    config.epilogueKind = *epilogueKind;
+    return config;
+  }
+  // No Relu/LeakyRelu pattern, but the chain may still be a supported
+  // bias-add-only epilogue (bias folded into AIC via mm.SetBias, AIV side is
+  // pass-through DataCopy).  Falling back to Identity also unblocks the case
+  // where vec ops exist but aren't a known activation shape — sim will only
+  // produce a correct result if those ops happen to be already-handled by
+  // the cube intrinsic (bias) or are a no-op chain.
+  if (config.hasBiasAdd) {
+    config.epilogueKind = SupportedMixKernelConfig::EpilogueKind::Identity;
+    return config;
+  }
+  return failure();
 }
 
 static FailureOr<SupportedMixBoundaryPayload>
@@ -1570,15 +1655,36 @@ static StringRef getSupportedMixElementTypeSpelling(Type type) {
   llvm_unreachable("unsupported supported-mix boundary element type");
 }
 
+// Emit the activation step of the AIV block.  Each EpilogueKind is one entry
+// in this dispatch table — adding a new fused elementwise op = adding (a) a
+// recognizer in `inferSupportedMixEpilogueKind` and (b) one emit branch here.
+//
+// Bias-add (if `config.hasBiasAdd`) is *not* emitted in this AIV step; it is
+// folded into the AIC matmul intrinsic via `mm.SetBias(biasGM)` (see
+// `emitSupportedMixMatmulExecution`).  So the kinds whose name starts with
+// "BiasAdd*" only differ from the non-bias kinds at the AIC side.
 static void emitSupportedMixVectorEpilogue(raw_ostream &os,
                                            const SupportedMixKernelConfig &config) {
-  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
+  using K = SupportedMixKernelConfig::EpilogueKind;
+  switch (config.epilogueKind) {
+  case K::Relu:
     os << "    Relu(outLocal, inLocal, count);\n";
     return;
+  case K::LeakyRelu:
+    os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
+       << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
+       << "f), count);\n";
+    return;
+  case K::Identity:
+    // Pure pass-through: nothing to compute in the AIV step.  The boundary
+    // transfer already moves the (AIC-side bias-folded) matmul result through
+    // the queue.  outLocal is allocated empty; copy inLocal into it.
+    os << "    DataCopy(outLocal, inLocal, count);\n";
+    return;
+  case K::Unknown:
+    break;
   }
-  os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
-     << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
-     << "f), count);\n";
+  llvm_unreachable("emitSupportedMixVectorEpilogue called with Unknown kind");
 }
 
 static void emitSupportedMixMatmulObjectDecl(raw_ostream &os) {
@@ -1888,9 +1994,13 @@ static void emitSupportedMixCopyTilingHelper(raw_ostream &os) {
 
 static void emitSupportedMixKernelSignature(raw_ostream &os,
                                             StringRef kernelName,
-                                            const MixTaskKindDescriptor &desc) {
+                                            const MixTaskKindDescriptor &desc,
+                                            bool hasBias) {
   os << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
-     << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
+     << "    GM_ADDR a, GM_ADDR b, ";
+  if (hasBias)
+    os << "GM_ADDR bias, ";
+  os << "GM_ADDR out, GM_ADDR workspace,\n"
      << "    GM_ADDR tilingGm) {\n"
      << "  KERNEL_TASK_TYPE_DEFAULT(" << desc.taskTypeSpelling << ");\n"
      << "  TPipe pipe;\n"
@@ -1900,10 +2010,11 @@ static void emitSupportedMixKernelSignature(raw_ostream &os,
 }
 
 static void emitSupportedMixKernelShellPrologue(
-    raw_ostream &os, StringRef kernelName, const MixTaskKindDescriptor &desc) {
+    raw_ostream &os, StringRef kernelName, const MixTaskKindDescriptor &desc,
+    bool hasBias) {
   emitSupportedMixIncludesAndNamespaces(os);
   emitSupportedMixCopyTilingHelper(os);
-  emitSupportedMixKernelSignature(os, kernelName, desc);
+  emitSupportedMixKernelSignature(os, kernelName, desc, hasBias);
 }
 
 static void emitSupportedMixKernelShellEpilogue(raw_ostream &os) {
@@ -1917,7 +2028,8 @@ static bool emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
   const SupportedMixBoundaryLayer &boundaryLayer = supportedLowering.boundaryLayer;
   const SupportedMixKernelConfig &config = supportedLowering.config;
   MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
-  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
+  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc,
+                                      config.hasBiasAdd);
   const MixRegionPlan *cubeRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
   const MixRegionPlan *boundaryRegion =
@@ -1942,7 +2054,8 @@ static bool emitGenericMixSingleChainKernel(
     SupportedMixLoweringFailureReason &failureReason) {
   MixTaskKindDescriptor desc =
       getMixTaskKindDescriptor(supportedLowering.config.taskKind);
-  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
+  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc,
+                                      supportedLowering.config.hasBiasAdd);
   if (!emitMixKernelShellBody(os, supportedLowering.cubeOps,
                               *emissionPlan.boundaryRegion,
                               *emissionPlan.vectorRegion,
@@ -1984,19 +2097,129 @@ static LogicalResult emitTilingStructDecl(CodeEmitter &emitter, Location loc,
 /// Write tiling_space.json skeleton to outPath.
 /// dim_argN_D fields → fixed:true, shape_key:"argN_dimD".
 /// Other fields (TB_M etc.) → fixed:false, values:[].
-static void emitTilingSpaceJson(StringRef outPath,
-                                StringRef kernelFile,
-                                StringRef kernelName,
-                                emitasc::PyStructType tilingType) {
+/// block_dim_expr → the func's afir.block_dim_expr attr (set by TilePlanGen) if
+/// present, else "".
+static LogicalResult emitTilingSpaceJson(StringRef outPath,
+                                         StringRef kernelFile,
+                                         func::FuncOp funcOp,
+                                         emitasc::PyStructType tilingType,
+                                         StringRef socName) {
+  StringRef kernelName = funcOp.getName();
+  std::string blockDimExpr;
+  if (auto a = funcOp->getAttrOfType<StringAttr>("afir.block_dim_expr"))
+    blockDimExpr = a.getValue().str();
+  std::string axisExtentExpr;
+  if (auto a = funcOp->getAttrOfType<StringAttr>("afir.axis_extent_expr"))
+    axisExtentExpr = a.getValue().str();
   auto isDimField = [](StringRef name) {
     return name.starts_with("dim_arg");
   };
-  // "dim_arg2_1" → drop "dim_" → "arg2_1" → rfind '_' → "arg2" + "_dim" + "1"
-  auto makeShapeKey = [](StringRef name) -> std::string {
-    StringRef rest = name.drop_front(4); // drop "dim_"
-    auto pos = rest.rfind('_');
-    if (pos == StringRef::npos) return rest.str(); // single-component: no dimension index
-    return rest.substr(0, pos).str() + "_dim" + rest.substr(pos + 1).str();
+  auto schema = mlir::auto_fuse::lookupTilingInfoSchema(
+      funcOp->getParentOfType<ModuleOp>(), funcOp.getName());
+
+  // v2 path: translate `dim_arg<N>_<D>` via the schema's args[] table:
+  //   - Input-arg-sourced field → "arg<call_arg_index>_dim<source_dim>".
+  //   - Output-arg-sourced field → the precomputed shape_expr[source_dim].
+  //
+  // Failure paths return mlir::failure() and emit a hard diagnostic — empty
+  // shape_keys must never be written into tiling_space.json, where the
+  // downstream parsers (autotuner / network_runner) silently mis-resolve them.
+  auto makeShapeKey =
+      [&](StringRef fieldName) -> mlir::FailureOr<std::string> {
+    if (!schema)
+      return funcOp.emitError()
+             << "CannTranslation: missing schema_version=2 for kernel '"
+             << funcOp.getName() << "' — cannot derive shape_key for field '"
+             << fieldName << "'";
+    for (auto &f : schema->fields) {
+      if (f.kind != mlir::auto_fuse::SchemaFieldKind::ShapeDerived) continue;
+      if (f.name != fieldName) continue;
+      for (auto &a : schema->args) {
+        if (a.mlirIndex != f.sourceArg) continue;
+        if (a.role == mlir::auto_fuse::SchemaArgRole::Input)
+          return std::string("arg" + std::to_string(a.callArgIndex) +
+                             "_dim" + std::to_string(f.sourceDim));
+        if (a.role == mlir::auto_fuse::SchemaArgRole::Output &&
+            (size_t)f.sourceDim < a.shapeExpr.size())
+          return a.shapeExpr[f.sourceDim];
+        return funcOp.emitError()
+               << "CannTranslation: schema arg mlirIndex=" << f.sourceArg
+               << " for field '" << fieldName << "' in kernel '"
+               << funcOp.getName()
+               << "' has unsupported role/shapeExpr (source_dim="
+               << f.sourceDim << ")";
+      }
+      return funcOp.emitError()
+             << "CannTranslation: field '" << fieldName << "' in kernel '"
+             << funcOp.getName() << "' references source_arg mlirIndex="
+             << f.sourceArg << " but no such arg exists in schema";
+    }
+    return funcOp.emitError()
+           << "CannTranslation: shape-derived field '" << fieldName
+           << "' not found in schema for kernel '" << funcOp.getName() << "'";
+  };
+
+  // From auto_fuse.tiling_infos (set by TilePlanGen): tunable field -> the
+  // static extent of the axis it tiles (-1 if dynamic) and its default value.
+  llvm::DenseMap<StringRef, std::pair<int64_t, int64_t>> tunableInfo; // name -> {axisSize, default}
+  // Tile-data legality constraints (e.g. {divides, XBLOCK_SUB, XBLOCK},
+  // {le_bytes, ...}) from TilePlanGen.  Carried into tiling_space.json so the
+  // default-tiling picker (and autotuner) can reject illegal candidate combos
+  // — without this the picker silently picks XBLOCK_SUB > XBLOCK, the inner
+  // loop trips count==0 and the kernel writes no output (all-zero result).
+  llvm::json::Array constraintsArr;
+  if (auto moduleOp = funcOp->getParentOfType<ModuleOp>()) {
+    if (auto infos = moduleOp->getAttrOfType<ArrayAttr>("auto_fuse.tiling_infos")) {
+      for (Attribute ia : infos) {
+        auto entry = dyn_cast<DictionaryAttr>(ia);
+        if (!entry) continue;
+        auto kid = dyn_cast_or_null<StringAttr>(entry.get("kernel_id"));
+        if (!kid || kid.getValue() != kernelName) continue;
+        if (auto fs = dyn_cast_or_null<ArrayAttr>(entry.get("fields"))) {
+          for (Attribute fa : fs) {
+            auto fd = dyn_cast<DictionaryAttr>(fa);
+            if (!fd) continue;
+            auto fn = dyn_cast_or_null<StringAttr>(fd.get("name"));
+            auto as = dyn_cast_or_null<IntegerAttr>(fd.get("axis_size"));
+            auto dv = dyn_cast_or_null<IntegerAttr>(fd.get("default_value"));
+            if (fn)
+              tunableInfo[fn.getValue()] = {as ? as.getInt() : -1,
+                                            dv ? dv.getInt() : 0};
+          }
+        }
+        if (auto cs = dyn_cast_or_null<ArrayAttr>(entry.get("constraints"))) {
+          for (Attribute ca : cs) {
+            auto cd = dyn_cast<DictionaryAttr>(ca);
+            if (!cd) continue;
+            auto kind = dyn_cast_or_null<StringAttr>(cd.get("kind"));
+            auto lhs = dyn_cast_or_null<StringAttr>(cd.get("lhs"));
+            auto rhs = dyn_cast_or_null<StringAttr>(cd.get("rhs"));
+            if (!kind || !lhs || !rhs) continue;
+            llvm::json::Object c;
+            c["kind"] = kind.getValue().str();
+            c["lhs"] = lhs.getValue().str();
+            c["rhs"] = rhs.getValue().str();
+            constraintsArr.push_back(std::move(c));
+          }
+        }
+        break;
+      }
+    }
+  }
+  // Power-of-2 sweep for a tile-size param, capped at the axis size (when
+  // known); always non-empty.  The cartesian product (and ordering constraints
+  // like XBLOCK_SUB <= XBLOCK) are pruned by the autotuner.
+  auto genTunableValues = [](int64_t axisSize, int64_t defaultVal) {
+    llvm::SmallVector<int64_t, 8> cand{16, 32, 64, 128, 256};
+    if (defaultVal > 0) cand.push_back(defaultVal);
+    llvm::SmallVector<int64_t, 8> out;
+    for (int64_t v : cand)
+      if (v >= 1 && (axisSize <= 0 || v <= axisSize) && !llvm::is_contained(out, v))
+        out.push_back(v);
+    if (out.empty())
+      out.push_back(axisSize > 0 ? axisSize : (defaultVal > 0 ? defaultVal : 16));
+    llvm::sort(out);
+    return out;
   };
 
   auto names = tilingType.getNamesAttr().getValue();
@@ -2014,10 +2237,18 @@ static void emitTilingSpaceJson(StringRef outPath,
     p["type"] = "int64"; // TODO: derive from PyStructType field type when non-i64 fields exist
     if (isDimField(name)) {
       p["fixed"] = true;
-      p["shape_key"] = makeShapeKey(name);
+      auto sk = makeShapeKey(name);
+      if (failed(sk)) return failure();
+      p["shape_key"] = *sk;
     } else {
       p["fixed"] = false;
-      p["values"] = llvm::json::Array{};
+      auto it = tunableInfo.find(name);
+      int64_t axisSize = it != tunableInfo.end() ? it->second.first : -1;
+      int64_t defVal = it != tunableInfo.end() ? it->second.second : 0;
+      llvm::json::Array vals;
+      for (int64_t v : genTunableValues(axisSize, defVal))
+        vals.push_back(v);
+      p["values"] = std::move(vals);
     }
     params.push_back(std::move(p));
   }
@@ -2025,20 +2256,176 @@ static void emitTilingSpaceJson(StringRef outPath,
   llvm::json::Object root;
   root["kernel"]         = kernelName.str();
   root["kernel_file"]    = kernelFile.str();
-  root["soc"]            = "Ascend910B1";
-  root["block_dim_expr"] = "";
+  StringRef socStr = socName.empty() ? StringRef("Ascend910B1") : socName;
+  root["soc"]            = socStr.str();
+  root["block_dim_expr"] = blockDimExpr;
+  root["axis_extent_expr"] = axisExtentExpr;
+
+  // v2 schema sidecar: emit the full per-MLIR-arg table for the runner.
+  // The runner uses this to resolve shape_keys against arbitrary kernel-arg
+  // topologies (kernels that consume non-leading network inputs, or whose
+  // output stride depends on output-arg dims).  network.json is written at
+  // GroupOutline time, before TilePlanGen has emitted the schema, so the
+  // canonical sidecar lives here (post-codegen).  Shape matches the block
+  // in NetworkJsonEmitter.cpp:206-242.
+  if (schema) {
+    llvm::json::Array schArgs;
+    for (auto &a : schema->args) {
+      llvm::json::Object e;
+      e["mlir_index"] = static_cast<int64_t>(a.mlirIndex);
+      switch (a.role) {
+        case mlir::auto_fuse::SchemaArgRole::Input:
+          e["role"] = "input";
+          e["call_arg_index"] = static_cast<int64_t>(a.callArgIndex);
+          break;
+        case mlir::auto_fuse::SchemaArgRole::Output: {
+          e["role"] = "output";
+          e["result_index"] = static_cast<int64_t>(a.resultIndex);
+          llvm::json::Array se;
+          for (auto &s : a.shapeExpr) se.push_back(s);
+          e["shape_expr"] = std::move(se);
+          break;
+        }
+        case mlir::auto_fuse::SchemaArgRole::TileParam:
+          e["role"] = "tile_param";
+          e["name"] = a.tileParamName;
+          break;
+        case mlir::auto_fuse::SchemaArgRole::Workspace:
+          e["role"] = "workspace";
+          break;
+        case mlir::auto_fuse::SchemaArgRole::TilingDataStruct:
+          e["role"] = "tiling_data_struct";
+          break;
+      }
+      schArgs.push_back(std::move(e));
+    }
+    root["schema_args"] = std::move(schArgs);
+
+    // shape_equalities: groups of (call_arg_index, dim) pairs whose input
+    // shape dims must all resolve to the same integer at runtime.  Runner
+    // validates before kernel launch.
+    if (!schema->shapeEqualities.empty()) {
+      llvm::json::Array eqs;
+      for (const auto &g : schema->shapeEqualities) {
+        llvm::json::Array group;
+        for (auto [callIdx, dim] : g) {
+          llvm::json::Array pair;
+          pair.push_back(static_cast<int64_t>(callIdx));
+          pair.push_back(static_cast<int64_t>(dim));
+          group.push_back(std::move(pair));
+        }
+        eqs.push_back(std::move(group));
+      }
+      root["shape_equalities"] = std::move(eqs);
+    }
+  }
+
+  // UB-aware tiling cost: stamp the SoC's TBuf/TQue pool size, plus a
+  // symbolic byte cost that the picker / autotuner can compare against it
+  // to prune over-budget candidates.  See plan
+  // docs/superpowers/plans/2026-05-14-ub-aware-tiling-cost.zh.md.
+  //
+  // Cost model: cost = 2 * max(align32(init_buffer.size))
+  //   - MAX (not SUM) over all init_buffer/init_queue ops in the function:
+  //     the simulator's TPipe bump-pointer allocator only fails at the
+  //     boundary where a *single* allocation runs off the pool end.  Sum
+  //     of all InitBuffer sizes routinely exceeds the pool in working
+  //     kernels (dead branches, dual-staged buffers) without observable
+  //     failure, so SUM is empirically not the right metric.
+  //   - 2x factor: peak live UB at any one instant typically holds an
+  //     input-side TBuf and an output-side TBuf concurrently, so the
+  //     effective cap on a single buffer is ~pool/2.  Validated against
+  //     examples/dyn-bucketed-e2e d2 sweep:
+  //       v32  =  32 KB (R=64,XBLOCK_SUB=128):  PASS — 2*32 = 64KB ≤ 184KB
+  //       v32  =  96 KB (R=192,XBLOCK_SUB=128): PASS — 2*96 = 192KB > 184KB,
+  //                                             picker drops to XBLOCK_SUB=64
+  //       v32  = 128 KB (R=256,XBLOCK_SUB=128): FAIL — 2*128 = 256KB > 184KB,
+  //                                             picker drops to XBLOCK_SUB=64
+  //       v32  = 256 KB (R=512,XBLOCK_SUB=128): FAIL — picker drops to XBLOCK_SUB=16
+  if (auto spec = afir::cannkernel::getSocSpec(socStr))
+    root["ub_budget_bytes"] = (int64_t)spec->totalVecLocalSize;
+  {
+    // Emit a LIST of per-buffer aligned-size expressions (each pure +-*/);
+    // consumers take max() in their host language and compare against
+    // ub_budget_bytes / 2 (the 2x safety factor for input+output liveness
+    // is applied at the consumer side, not baked into the expression, so
+    // we don't have to nest a Max-tree in SymExpr — that nests `?:` at
+    // each level and blows up emit-string size to 2^N with N buffers).
+    //
+    // TPipe bump-pointer model: every `InitBuffer` / `InitQueue` advances
+    // the UB allocator's offset by its aligned size; buffers are never
+    // reclaimed inside a kernel.  Real cost is therefore SUM (not MAX) of
+    // every InitBuffer in the function.  We dedup IDENTICAL size
+    // expressions but keep their count, so 44 same-size VECCALC TBufs
+    // (BERT GELU group20) emit as `44 * (align32(...))` rather than a
+    // single `align32(...)` that loses the 43-buffer SUM (which made the
+    // picker think 8KB total when reality was 352KB > 188KB UB pool,
+    // overflowing into invalid GM scalar addrs — rc=507035).
+    afir::cannkernel::NameSymTable names;
+    std::map<std::string, int> exprCounts;
+    bool ok = true;
+    funcOp.walk([&](Operation *op) {
+      Value sizeOperand;
+      if (auto ib = dyn_cast<ascendc::TPipeInitBufferOp>(op))
+        sizeOperand = ib.getLength();
+      else if (auto iq = dyn_cast<ascendc::TPipeInitQueueOp>(op))
+        sizeOperand = iq.getLength();
+      else
+        return;
+      auto e = afir::cannkernel::liftSizeOperand(sizeOperand, names);
+      if (!e) { ok = false; return; }
+      auto aligned = afir::cannkernel::align32(*e);
+      auto nameFor = [&](afir::symshape::SymId id) -> std::string {
+        auto it = names.idToName.find(id);
+        return it != names.idToName.end() ? it->second : "?";
+      };
+      std::string s = aligned.emitC(nameFor);
+      exprCounts[s]++;
+    });
+    if (ok && !exprCounts.empty()) {
+      // Emit one combined SUM as a single list entry: the picker's
+      // `max(list)` then equals the total live UB footprint, and its 2×
+      // safety factor stays as defense-in-depth.
+      //
+      // Grammar requirement (eval_block_dim in network_runner.py and
+      // evalBlockExpr in autotuner_main.cpp): every binary op must be
+      // *fully parenthesized*, e.g. `(A * B)` not `A * B`.  Emit each
+      // count-multiplied term with explicit outer parens, then combine
+      // pairwise with parens as well.
+      std::string combined;
+      bool first = true;
+      for (auto &kv : exprCounts) {
+        std::string term = kv.second == 1
+            ? "(" + kv.first + ")"
+            : "(" + std::to_string(kv.second) + " * (" + kv.first + "))";
+        if (first) {
+          combined = term;
+          first = false;
+        } else {
+          combined = "(" + combined + " + " + term + ")";
+        }
+      }
+      llvm::json::Array arr;
+      arr.push_back(combined);
+      root["ub_cost_bytes_exprs"] = std::move(arr);
+    }
+  }
+
   root["tiling_params"]  = std::move(params);
+  if (!constraintsArr.empty())
+    root["constraints"] = std::move(constraintsArr);
 
   std::error_code ec;
   llvm::raw_fd_ostream f(outPath, ec);
   if (ec) {
     llvm::errs() << "Warning: cannot write tiling_space.json to "
                  << outPath << ": " << ec.message() << "\n";
-    return;
+    return failure();
   }
   llvm::json::OStream jos(f, /*IndentSize=*/2);
   jos.value(llvm::json::Value(std::move(root)));
   f << "\n";
+  return success();
 }
 
 /// Emit the CANN-standard function signature and body.
@@ -2169,7 +2556,49 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     Value sizeVal = op.getSize();
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
-    if (!sizeVal) {
+
+    // If baseBuffer comes from a memref.cast(memref.subview(base, [offset])),
+    // bake the subview offset into the pointer so the emitter sees only plain
+    // function-arg values that it already knows how to print.
+    Value subviewOffset;
+    if (auto castOp = baseBuffer.getDefiningOp<memref::CastOp>()) {
+      if (auto subviewOp =
+              castOp.getOperand().getDefiningOp<memref::SubViewOp>()) {
+        SmallVector<OpFoldResult> mixedOffsets = subviewOp.getMixedOffsets();
+        if (!mixedOffsets.empty()) {
+          if (auto dynOff = dyn_cast<Value>(mixedOffsets[0])) {
+            baseBuffer = subviewOp.getSource();
+            subviewOffset = dynOff;
+          } else if (auto attrOff = dyn_cast<Attribute>(mixedOffsets[0])) {
+            int64_t constOff = cast<IntegerAttr>(attrOff).getInt();
+            baseBuffer = subviewOp.getSource();
+            if (constOff != 0)
+              subviewOffset = rewriter.create<arith::ConstantIndexOp>(
+                  loc, constOff);
+          }
+        }
+      } else if (auto ba = dyn_cast<BlockArgument>(castOp.getOperand())) {
+        // memref.cast directly off a *func-entry* BlockArgument (no subview
+        // underneath) — e.g. the RCore output arg arrives as `memref<f16,
+        // strided<[], offset:?>>` (from materialize_in_destination's
+        // bufferization) and is cast to plain `memref<f16>` before
+        // SetGlobalBuffer.  PyAsc's default printer for that memref.cast emits
+        // `half *v = reinterpret_cast<half*>(gm_addr)` (missing __gm__), which
+        // CANN rejects.  Peel the cast: use the BlockArgument directly; the
+        // cleanup pass below erases the now-dead cast.  Restrict to func-entry
+        // BlockArgs (not scf.for / scf.if region BlockArgs) so a future memref
+        // iter_arg inside a loop doesn't accidentally match.
+        Block *owner = ba.getOwner();
+        if (auto funcOp = dyn_cast<func::FuncOp>(owner->getParentOp());
+            funcOp && &funcOp.getBody().front() == owner)
+          baseBuffer = castOp.getOperand();
+      }
+    }
+
+    // Choose between 1-arg and 2-arg form based on whether we have an offset.
+    Value elemOffset = subviewOffset ? subviewOffset
+                                     : (sizeVal ? peelIndexCast(sizeVal) : Value{});
+    if (!elemOffset) {
       std::string tmpl =
           "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
           "*>($1))";
@@ -2180,13 +2609,97 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       return;
     }
 
-    Value elemOffset = peelIndexCast(sizeVal);
     std::string tmpl =
         "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
         "*>($1) + $2)";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getTensor(), baseBuffer, elemOffset}));
+    rewriter.eraseOp(op);
+  });
+
+  // DataCopyL2Op store of a TBuf-backed accumulator (the RBLOCK reduction-split
+  // path) → DataCopyPad, so a sub-32-byte element count (e.g. out[A_sub] with
+  // A_sub·elem_bytes < 32) reaches GM correctly.  Plain DataCopy to GM requires
+  // a block-aligned count and silently drops the tail otherwise; DataCopyPad
+  // takes a byte length.  The queued VECOUT path always stores a full inner
+  // row (≥ block-sized) and is left on the plain-DataCopy path.
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    if (!isa<ascendc::GlobalTensorType>(op.getDst().getType()))
+      return;
+    if (!op.getSrc().getDefiningOp<ascendc::TBufGetTensorOp>())
+      return;
+    auto tt = cast<ascendc::LocalTensorType>(op.getSrc().getType());
+    std::string elemTypeStr = getAscendCScalarTypeName(tt.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl =
+        "{\n  AscendC::DataCopyExtParams _afir_dcp{(uint16_t)1, "
+        "(uint32_t)($2 * sizeof(" + elemTypeStr + ")), (uint32_t)0, "
+        "(uint32_t)0, (uint32_t)0};\n"
+        "  AscendC::DataCopyPad($0, $1, _afir_dcp);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
+    rewriter.eraseOp(op);
+  });
+
+  // Ragged-tail GM↔UB copies (the tile-fuse ragged-tail `scf.if`) →
+  // DataCopyPad, so an unaligned f16 offset/length (rem·elemBytes not 32B
+  // aligned) is legal.  Plain DataCopy requires 32B-block alignment and
+  // silently drops/over-reads otherwise.  GM offset is already baked into the
+  // GlobalTensor (SetGlobalBuffer base+offset); DataCopyPad just takes a byte
+  // length.  Load needs a (no-op) DataCopyPadExtParams; store does not.
+  //
+  // A source-level `afir.ragged_tail` attr on the tail `scf.if` would NOT
+  // survive one-shot-bufferize (it re-creates the `scf.if` with memref result
+  // types and drops discardable attrs), so we detect the tail structurally:
+  // GroupEmitter is the ONLY site in the whole AutoFuse codegen path that
+  // emits an `arith.cmpi slt` (the `slt(mainInnerUb, remaining)` ragged-tail
+  // guard in GroupEmitter::emitGroup); the per-core work guard uses `ult`.
+  // So "nearest enclosing scf.if whose condition is an `arith.cmpi slt`"
+  // uniquely identifies the ragged tail post-bufferize.
+  auto inRaggedTail = [](Operation *op) -> bool {
+    for (Operation *p = op->getParentOp(); p; p = p->getParentOp())
+      if (auto ifOp = dyn_cast<scf::IfOp>(p))
+        if (auto cmp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>())
+          if (cmp.getPredicate() == arith::CmpIPredicate::slt)
+            return true;
+    return false;
+  };
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    if (!inRaggedTail(op))
+      return;
+    bool store = isa<ascendc::GlobalTensorType>(op.getDst().getType());
+    bool load = isa<ascendc::GlobalTensorType>(op.getSrc().getType());
+    if (store == load)
+      return; // UB↔UB or GM↔GM — leave on the default path
+    // Accumulator stores are already rewritten by the walk above; skip.
+    if (store && op.getSrc().getDefiningOp<ascendc::TBufGetTensorOp>())
+      return;
+    Value localSide = store ? op.getSrc() : op.getDst();
+    auto lt = cast<ascendc::LocalTensorType>(localSide.getType());
+    std::string elemTypeStr = getAscendCScalarTypeName(lt.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl;
+    if (store) {
+      tmpl = "{\n  AscendC::DataCopyExtParams _afir_dcp{(uint16_t)1, "
+             "(uint32_t)($2 * sizeof(" + elemTypeStr + ")), (uint32_t)0, "
+             "(uint32_t)0, (uint32_t)0};\n"
+             "  AscendC::DataCopyPad($0, $1, _afir_dcp);\n}";
+    } else {
+      tmpl = "{\n  AscendC::DataCopyExtParams _afir_dcp{(uint16_t)1, "
+             "(uint32_t)($2 * sizeof(" + elemTypeStr + ")), (uint32_t)0, "
+             "(uint32_t)0, (uint32_t)0};\n"
+             "  AscendC::DataCopyPadExtParams<" + elemTypeStr +
+             "> _afir_pad{false, (uint8_t)0, (uint8_t)0, (" + elemTypeStr +
+             ")0};\n"
+             "  AscendC::DataCopyPad($0, $1, _afir_dcp, _afir_pad);\n}";
+    }
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
     rewriter.eraseOp(op);
   });
 
@@ -2223,46 +2736,187 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   });
 
   // BroadcastL2Op → verbatim
+  //
+  // AscendC::Broadcast only supports dim=1 or dim=2. For rank > 2, fold the
+  // N-D shapes to 2D by locating the broadcast axis (the unique dim where
+  // srcShape[i] is a compile-time constant 1 and dstShape[i] is not) and
+  // computing:
+  //
+  //   prefix = product(srcShape[0..bcastAxis-1])  (same for dst)
+  //   suffix = product(srcShape[bcastAxis+1..])    (same for dst)
+  //   src2D  = {prefix,            suffix}
+  //   dst2D  = {prefix*dstShape[i], suffix}
+  //
+  // This collapses all outer dims into one "row" count and all inner dims
+  // into one "col" count.  The broadcast is then a row-broadcast (axis=0) if
+  // bcastAxis < rank-1, or a column-broadcast (axis=1) otherwise.
+  //
+  // Multi-axis broadcasts (e.g. [1,D,1] → [D0,D,D2]) MUST be decomposed into
+  // a chain of single-axis BroadcastL2Ops by an earlier pass before reaching
+  // here; this handler emits an op error on multi-axis input.
   moduleOp->walk([&](ascendc::BroadcastL2Op op) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     uint32_t rank = op.getConstRank();
 
-    // Build verbatim string with $N placeholders.
     // Operand layout: $0=dst, $1=src, $2..$2+rank-1=dstShape, $2+rank..=srcShape
-    std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_ds[" + std::to_string(rank) + "] = {";
-    for (uint32_t i = 0; i < rank; ++i) {
-      if (i) tmpl += ", ";
-      tmpl += "(uint32_t)$" + std::to_string(2 + i);
-    }
-    tmpl += "};\n";
-    tmpl += "  uint32_t _afir_ss[" + std::to_string(rank) + "] = {";
-    for (uint32_t i = 0; i < rank; ++i) {
-      if (i) tmpl += ", ";
-      tmpl += "(uint32_t)$" + std::to_string(2 + rank + i);
-    }
-    tmpl += "};\n";
-    // Determine axis: if srcShape[-1] == 1 (column broadcast), axis=1.
-    // If srcShape[0] == 1 (row broadcast), axis=0.
-    // Inspect the last srcShape value operand: if it is a constant 1, use axis=1.
     auto srcShapeVals = op.getSrcShape();
-    int axis = 0;
-    if (!srcShapeVals.empty()) {
-      Value lastSrc = srcShapeVals[srcShapeVals.size() - 1];
-      if (auto constOp = lastSrc.getDefiningOp<arith::ConstantOp>()) {
-        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-          if (intAttr.getInt() == 1)
-            axis = 1;
-        }
-      }
-    }
+    auto dstShapeVals = op.getDstShape();
+
+    // Helper: is `v` a compile-time constant integer with value 1?
+    auto isStaticOne = [](Value v) -> bool {
+      if (auto c = v.getDefiningOp<arith::ConstantOp>())
+        if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+          return ia.getInt() == 1;
+      return false;
+    };
+
     // Use actual element type of dst instead of hardcoded 'half'.
     auto dstElemType =
         cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
     std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
-    tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " + std::to_string(rank) +
-            ", " + std::to_string(axis) + ">($0, $1, _afir_ds, _afir_ss);\n}";
+
+    // Helper: build a placeholder product string for indices [lo, hi).
+    // Returns e.g. "(uint32_t)$5 * (uint32_t)$6" or "(uint32_t)$5" for a
+    // single index, or "1u" when the range is empty.
+    auto placeholderProduct = [&](uint32_t lo, uint32_t hi) -> std::string {
+      if (lo >= hi) return "1u";
+      std::string s = "(uint32_t)$" + std::to_string(lo);
+      for (uint32_t k = lo + 1; k < hi; ++k)
+        s += " * (uint32_t)$" + std::to_string(k);
+      return s;
+    };
+
+    std::string tmpl;
+
+    // For rank > 2: fold to 2D.  Find the broadcast axis (where srcShape[i]
+    // is statically 1 and dstShape[i] is not).  Also count broadcast axes;
+    // multi-axis input is a programming error (decomposition pass missed it).
+    int bcastAxis = -1;
+    int bcastAxisCount = 0;
+    if (rank > 2) {
+      for (uint32_t i = 0; i < rank; ++i) {
+        if (isStaticOne(srcShapeVals[i]) && !isStaticOne(dstShapeVals[i])) {
+          if (bcastAxis < 0)
+            bcastAxis = static_cast<int>(i);
+          ++bcastAxisCount;
+        }
+      }
+      if (bcastAxisCount > 1) {
+        op.emitOpError("rank>2 broadcast with ")
+            << bcastAxisCount
+            << " broadcast axes reached CannTranslation; expected the "
+               "DecomposeMultiAxisBroadcast pass to lower this to a chain of "
+               "single-axis broadcasts";
+        return;
+      }
+    }
+
+    if (bcastAxis >= 0) {
+      // Fold rank-N to 2D.  AscendC::Broadcast supports two 2D forms:
+      //   axis=0 (row):    src{1, N}    -> dst{M, N}
+      //   axis=1 (column): src{M, 1}    -> dst{M, N}
+      // For a broadcast on axis ba of an N-D shape, the element mapping is
+      // src[p, 0, s] -> dst[p, j, s] for j in [0, D), where p ranges over
+      // prefix = prod(dims[0,ba)) and s over suffix = prod(dims(ba,N)).  This
+      // folds to a 2D broadcast iff prefix==1 (row form: src{1, suffix} ->
+      // dst{D, suffix}) OR suffix==1 (column form: src{prefix, 1} ->
+      // dst{prefix, D}).  When both prefix and suffix are >1, the broadcast
+      // interleaves and cannot be expressed as a single 2D AscendC::Broadcast
+      // call.
+      //
+      // The check is STATIC: we treat a dim as "1" only when its shape operand
+      // is an arith.constant 1.  Runtime values whose value happens to be 1
+      // do not qualify — the kernel author / decompose pass must arrange the
+      // IR so the foldable dims are emitted as arith.constant 1 (e.g. the
+      // decompose pass walks broadcast axes in an order that keeps either
+      // prefix or suffix all-constant-1).
+      uint32_t ba = static_cast<uint32_t>(bcastAxis);
+      uint32_t dstBase = 2, srcBase = 2 + rank;
+      auto rangeAllStaticOne = [&](uint32_t lo, uint32_t hi) -> bool {
+        for (uint32_t i = lo; i < hi; ++i)
+          if (!isStaticOne(srcShapeVals[i]))
+            return false;
+        return true;
+      };
+      bool prefixIsOne = rangeAllStaticOne(0, ba);
+      bool suffixIsOne = rangeAllStaticOne(ba + 1, rank);
+
+      std::string prefixStr = placeholderProduct(srcBase, srcBase + ba);
+      std::string suffixStr =
+          placeholderProduct(srcBase + ba + 1, srcBase + rank);
+      std::string bcastDimStr = "(uint32_t)$" + std::to_string(dstBase + ba);
+
+      if (suffixIsOne) {
+        // Column broadcast: src{prefix, 1} -> dst{prefix, D}
+        std::string dst2DRow = prefixStr;
+        std::string dst2DCol = bcastDimStr;
+        std::string src2DRow = prefixStr;
+        std::string src2DCol = "1u";
+        tmpl = "{\n";
+        tmpl += "  uint32_t _afir_ds[2] = {" + dst2DRow + ", " + dst2DCol + "};\n";
+        tmpl += "  uint32_t _afir_ss[2] = {" + src2DRow + ", " + src2DCol + "};\n";
+        tmpl += "  AscendC::Broadcast<" + elemTypeStr +
+                ", 2, 1>($0, $1, _afir_ds, _afir_ss);\n}";
+      } else if (prefixIsOne) {
+        // Row broadcast: src{1, suffix} -> dst{D, suffix}
+        std::string dst2DRow = bcastDimStr;
+        std::string dst2DCol = suffixStr;
+        std::string src2DRow = "1u";
+        std::string src2DCol = suffixStr;
+        tmpl = "{\n";
+        tmpl += "  uint32_t _afir_ds[2] = {" + dst2DRow + ", " + dst2DCol + "};\n";
+        tmpl += "  uint32_t _afir_ss[2] = {" + src2DRow + ", " + src2DCol + "};\n";
+        tmpl += "  AscendC::Broadcast<" + elemTypeStr +
+                ", 2, 0>($0, $1, _afir_ds, _afir_ss);\n}";
+      } else {
+        // Middle axis with both prefix>1 and suffix>1 statically — the
+        // broadcast interleaves and is not a single 2D AscendC::Broadcast.
+        // Emit a runtime loop: for p in [0, prefix), do a 2D row broadcast of
+        // a (1, suffix) slice into a (D, suffix) slice, advancing the src/dst
+        // pointers by suffix / (D*suffix) elements per iteration.  When
+        // prefix==1 at runtime this is a single broadcast call (which is what
+        // the previous formula relied on); when prefix>1 it is still correct.
+        tmpl = "{\n";
+        tmpl += "  uint32_t _afir_prefix = " + prefixStr + ";\n";
+        tmpl += "  uint32_t _afir_suffix = " + suffixStr + ";\n";
+        tmpl += "  uint32_t _afir_D = " + bcastDimStr + ";\n";
+        tmpl += "  uint32_t _afir_ds[2] = {_afir_D, _afir_suffix};\n";
+        tmpl += "  uint32_t _afir_ss[2] = {1u, _afir_suffix};\n";
+        tmpl += "  for (uint32_t _afir_p = 0; _afir_p < _afir_prefix; ++_afir_p) {\n";
+        tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", 2, 0>(\n";
+        tmpl += "        $0[_afir_p * _afir_D * _afir_suffix],\n";
+        tmpl += "        $1[_afir_p * _afir_suffix],\n";
+        tmpl += "        _afir_ds, _afir_ss);\n";
+        tmpl += "  }\n}";
+      }
+    } else {
+      // rank <= 2 or no constant-1 srcShape found: use native rank.
+      // Determine axis: if last srcShape dim is constant 1, it is column
+      // broadcast (axis=1); otherwise row broadcast (axis=0).
+      int axis = 0;
+      if (!srcShapeVals.empty()) {
+        Value lastSrc = srcShapeVals[srcShapeVals.size() - 1];
+        if (auto constOp = lastSrc.getDefiningOp<arith::ConstantOp>())
+          if (cast<IntegerAttr>(constOp.getValue()).getInt() == 1)
+            axis = 1;
+      }
+      tmpl = "{\n";
+      tmpl += "  uint32_t _afir_ds[" + std::to_string(rank) + "] = {";
+      for (uint32_t i = 0; i < rank; ++i) {
+        if (i) tmpl += ", ";
+        tmpl += "(uint32_t)$" + std::to_string(2 + i);
+      }
+      tmpl += "};\n";
+      tmpl += "  uint32_t _afir_ss[" + std::to_string(rank) + "] = {";
+      for (uint32_t i = 0; i < rank; ++i) {
+        if (i) tmpl += ", ";
+        tmpl += "(uint32_t)$" + std::to_string(2 + rank + i);
+      }
+      tmpl += "};\n";
+      tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " + std::to_string(rank) +
+              ", " + std::to_string(axis) + ">($0, $1, _afir_ds, _afir_ss);\n}";
+    }
 
     SmallVector<Value> args;
     args.push_back(op.getDst());
@@ -2329,13 +2983,24 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                ", (uint32_t)$1 * sizeof(uint32_t));\n";
     prelude += "AscendC::LocalTensor<uint32_t> " + tensorName + " = " +
                tbufName + ".Get<uint32_t>();\n";
+    // The index tensor ($2) arrived via DataCopy (MTE2) and DeQue; the DeQue
+    // only orders MTE2->V, but the GetValue below reads it on the scalar pipe
+    // (S).  Without an MTE2->S barrier the scalar read races the copy on real
+    // hardware and returns garbage indices (the simulator runs in order and
+    // hides it).  PIPE_ALL drains the move pipe before the scalar read.
+    prelude += "AscendC::PipeBarrier<PIPE_ALL>();\n";
     prelude +=
         "for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($1); _afir_i++) {\n";
     prelude += "  " + tensorName +
                ".SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)) * " +
                std::to_string(srcElemBytes) + ");\n";
     prelude += "}";
-    prelude += "\nAscendC::PipeBarrier<PIPE_V>()";
+    // The byte offsets were written by SetValue on the scalar pipe (S); the
+    // Gather below reads them on the vector pipe (V).  PipeBarrier<PIPE_V> only
+    // orders V-vs-V, NOT S->V, so on real hardware Gather can read stale/garbage
+    // offsets and dereference a wild UB address (VEC UB out-of-bounds; the
+    // simulator masks the cross-pipe race).  Use PIPE_ALL.
+    prelude += "\nAscendC::PipeBarrier<PIPE_ALL>()";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(prelude),
         ValueRange({pipeVal, op.getCount(), op.getSrcOffset()}));
@@ -2399,6 +3064,21 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       }
     }
 
+    // dst byte-length: if dst is a TBuf-backed tensor (the RBLOCK reduction-
+    // split accumulating-reduce path uses a fresh VECCALC TBuf for the per-chunk
+    // result), find its TPipeInitBufferOp length the same way.
+    if (!dstQueueLenVal) {
+      if (auto getOp = op.getDst().getDefiningOp<ascendc::TBufGetTensorOp>()) {
+        Value tbufVal = getOp.getBuffer();
+        for (auto *user : tbufVal.getUsers()) {
+          if (auto initB = dyn_cast<ascendc::TPipeInitBufferOp>(user)) {
+            dstQueueLenVal = initB.getLength();
+            break;
+          }
+        }
+      }
+    }
+
     // $3: find TPipeInitBufferOp length for the src TBuf (rows*N*sizeof(half)).
     Value srcTBufLenVal;
     if (auto getOp = op.getSrc().getDefiningOp<ascendc::TBufGetTensorOp>()) {
@@ -2411,54 +3091,163 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       }
     }
 
+    // Verbatim arg order is {dst, src, [dstLen], [srcLen], pipe}; the source
+    // byte-length token shifts depending on whether dstLen was pushed, and the
+    // pipe token depends on how many byte-length operands precede it.
+    std::string srcLenTok = dstQueueLenVal ? "$3" : "$2";
+    int pipeArgIdx = 2 + (dstQueueLenVal ? 1 : 0) + (srcTBufLenVal ? 1 : 0);
+    std::string pipeTok = "$" + std::to_string(pipeArgIdx);
+
+    // Use the actual element type of dst (was previously hardcoded to `half`,
+    // which silently miscompiled f32 reduce kernels: cols counted in bytes/2
+    // instead of bytes/4 and ReduceSum<half> reinterpreted f32 bytes as f16).
+    auto dstElemType =
+        cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
+    std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
+
     std::string tmpl = "{\n";
     if (isAR) {
       // AR: dst[r] = sum(src[r*cols .. r*cols+cols-1])
-      // Use ReduceSum<half> per row with a 32-byte scratch VECCALC TBuf.
+      // Use ReduceSum<T> per row with a 32-byte scratch VECCALC TBuf.
       // The TPipe is passed as the last operand so we can InitBuffer the scratch.
       // $1[r * cols] slices the src tensor to the start of row r.
-      std::string pipeRef; // placeholder name for pipe arg
+      std::string pipeRef = pipeTok;
       if (dstQueueLenVal && srcTBufLenVal) {
-        // $2 = dst_bytes, $3 = src_bytes, $4 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(half));\n";
-        tmpl += "  uint32_t _afir_cols = (uint32_t)($3 / $2);\n";
-        pipeRef = "$4";
+        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
+        tmpl += "  uint32_t _afir_cols = (uint32_t)(" + srcLenTok + " / $2);\n";
       } else if (dstQueueLenVal) {
-        // $2 = dst_bytes, $3 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(half));\n";
+        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $2);\n";
-        pipeRef = "$3";
+      } else if (srcTBufLenVal) {
+        // dst byte-length unavailable; recover rows from $0.GetSize().
+        tmpl += "  uint32_t _afir_rows = (uint32_t)$0.GetSize();\n";
+        tmpl += "  uint32_t _afir_cols = (uint32_t)(" + srcLenTok +
+                " / ($0.GetSize() * (uint32_t)sizeof(" + elemTypeStr + ")));\n";
       } else {
-        // $2 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($0.GetSize() / sizeof(half));\n";
+        tmpl += "  uint32_t _afir_rows = (uint32_t)($0.GetSize() / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $0.GetSize());\n";
-        pipeRef = "$2";
       }
-      auto srcElemType =
-          cast<ascendc::LocalTensorType>(op.getSrc().getType()).getElementType();
-      if (srcElemType.isF16()) {
-        tmpl += "  uint32_t _afir_src_elems = _afir_rows * _afir_cols;\n";
-        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_src_f32_tbuf;\n";
-        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_dst_f32_tbuf;\n";
-        tmpl += "  " + pipeRef + ".InitBuffer(_afir_src_f32_tbuf, _afir_src_elems * sizeof(float));\n";
-        tmpl += "  " + pipeRef + ".InitBuffer(_afir_dst_f32_tbuf, _afir_rows * sizeof(float));\n";
-        tmpl += "  AscendC::LocalTensor<float> _afir_src_f32 = _afir_src_f32_tbuf.Get<float>();\n";
-        tmpl += "  AscendC::LocalTensor<float> _afir_dst_f32 = _afir_dst_f32_tbuf.Get<float>();\n";
-        tmpl += "  AscendC::Cast(_afir_src_f32, $1, AscendC::RoundMode::CAST_NONE,\n";
-        tmpl += "                _afir_src_elems);\n";
-        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
-        tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
-        tmpl += "      _afir_dst_f32, _afir_src_f32, _afir_shape, false);\n";
-        tmpl += "  AscendC::Cast($0, _afir_dst_f32, AscendC::RoundMode::CAST_NONE,\n";
-        tmpl += "                _afir_rows);\n";
+      // Need two distinct scratch tensors: _afir_scalar (per-row result, 1 elem)
+      // and _afir_ws (ReduceSum's internal tree workspace, ≥ cols elems).
+      // ReduceSum requires dst != sharedTmpBuffer (aliasing them corrupts the
+      // output on arch 3101).
+      if (op.getSharedTmpBuffer()) {
+        // Pre-allocated scratch (the RBLOCK reduction-split path passes one so
+        // we don't InitBuffer inside the loop): first 8 elems = result slot,
+        // the rest = workspace.  Passed as the last verbatim operand ($N).
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr + "> _afir_scalar = " +
+                pipeTok + ";\n";
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr + "> _afir_ws = " +
+                pipeTok + "[8];\n";
       } else {
-        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
-        tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
-        tmpl += "      $0, $1, _afir_shape, false);\n";
+        // No pre-allocated scratch — InitBuffer two fresh VECCALC TBufs.  The
+        // last operand ($N) is the TPipe.  Workspace must hold one source row
+        // (cols elements); 32 B is too small for cols>8 fp32.
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dst;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
+        tmpl += "  uint32_t _afir_ws_bytes = ((_afir_cols * (uint32_t)sizeof(" +
+                elemTypeStr + ") + 31u) / 32u) * 32u;\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_dst, 32);\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, _afir_ws_bytes);\n";
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
+                "> _afir_scalar = _afir_tbuf_dst.Get<" + elemTypeStr + ">();\n";
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
+                "> _afir_ws = _afir_tbuf_ws.Get<" + elemTypeStr + ">();\n";
+      }
+      tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_rows; _afir_r++) {\n";
+      tmpl += "    AscendC::ReduceSum<" + elemTypeStr +
+              ">(_afir_scalar, $1[_afir_r * _afir_cols],\n";
+      tmpl += "                            _afir_ws, (int32_t)_afir_cols);\n";
+      // ReduceSum writes _afir_scalar on PIPE_V; the GetValue below reads it on
+      // PIPE_S. This is a V->S dependency, which PipeBarrier<PIPE_V> does NOT
+      // order (it only sequences vector-vs-vector). Use PIPE_ALL so the vector
+      // pipe drains before the scalar read; otherwise on real hardware the
+      // scalar GetValue races the ReduceSum write and reads stale (~0) data
+      // (the simulator masks this by executing effectively synchronously).
+      tmpl += "    AscendC::PipeBarrier<PIPE_ALL>();\n";
+      tmpl += "    $0.SetValue(_afir_r, _afir_scalar.GetValue(0));\n";
+      tmpl += "  }\n";
+      // The SetValue writes above happen on PIPE_S; a subsequent vector op that
+      // reads $0 (e.g. the accumulating AddL2 in the RBLOCK reduction-split
+      // path) runs on PIPE_V and must wait for the scalar writes to commit.
+      // When $0 is a queued VECOUT tensor this is handled by EnQue/DeQue, but
+      // when $0 is a plain TBuf tensor consumed directly we need an explicit
+      // barrier; PIPE_ALL is safe in both cases.
+      tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n}";
+    } else {
+      // RA layout: src is laid out as [R, A] (R = reduction extent, the FIRST
+      // axis; A = output extent, the SECOND axis), and we reduce R:
+      //     dst[a] = sum_{r} src[r*A + a]
+      // The reduction values for one output element are A-strided in the
+      // buffer, which adv_api ReduceSum<float, Pattern::Reduce::RA> handles
+      // directly.  This is the codegen path for a reduction whose iteration
+      // axis is the first (or, after collapse, the outer) axis of the operand
+      // — e.g. out[d0,d2] = sum_{d1} x[d0,d1,d2] processed one d0-row at a time
+      // (the per-row buffer is [d1(R), d2(A)]).
+      //
+      // Byte-length operands (same scheme as AR):
+      //   $2 = dst bytes = A * sizeof(T)       → A = $2 / sizeof(T)
+      //   $3 = src bytes = R * A * sizeof(T)   → R = $3 / $2
+      //   last operand   = TPipe (for the scratch TBuf)
+      //
+      // adv_api ReduceSum<*, RA> supports float only.  For a half input we
+      // upcast src to float in a VECCALC scratch TBuf, ReduceSum<float, RA>
+      // into a float result TBuf, then downcast back to half $0.  (R2 in the
+      // reduce-codegen-status notes.)
+      bool needUpcast = (elemTypeStr == "half");
+      std::string opTypeStr = needUpcast ? "float" : elemTypeStr;
+      std::string pipeRef = pipeTok;
+      bool haveLens = (bool)dstQueueLenVal && (bool)srcTBufLenVal;
+      if (haveLens) {
+        tmpl += "  uint32_t _afir_A = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
+        tmpl += "  uint32_t _afir_R = (uint32_t)(" + srcLenTok + " / $2);\n";
+      } else if (dstQueueLenVal) {
+        tmpl += "  uint32_t _afir_A = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
+        tmpl += "  uint32_t _afir_R = (uint32_t)($1.GetSize() / _afir_A);\n";
+      } else {
+        tmpl += "  uint32_t _afir_A = (uint32_t)($0.GetSize());\n";
+        tmpl += "  uint32_t _afir_R = (uint32_t)($1.GetSize() / _afir_A);\n";
+      }
+      // Scratch for ReduceSum's internal tree reduction, sized in the *op*
+      // type (float when upcasting from half).  Over-estimate as the float
+      // input byte size, 32 B-aligned, minimum 256 B.
+      tmpl += "  uint32_t _afir_ws_bytes = _afir_R * _afir_A * (uint32_t)sizeof(" +
+              opTypeStr + ");\n";
+      tmpl += "  _afir_ws_bytes = (_afir_ws_bytes < 256u) ? 256u : _afir_ws_bytes;\n";
+      tmpl += "  _afir_ws_bytes = ((_afir_ws_bytes + 31u) / 32u) * 32u;\n";
+      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
+      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, _afir_ws_bytes);\n";
+      tmpl += "  AscendC::LocalTensor<uint8_t> _afir_ws = _afir_tbuf_ws.Get<uint8_t>();\n";
+
+      std::string srcRef = "$1";
+      std::string dstRef = "$0";
+      if (needUpcast) {
+        // Float src TBuf (size = R*A*4 bytes), Cast half→float.
+        tmpl += "  uint32_t _afir_src_bytes = _afir_R * _afir_A * (uint32_t)sizeof(float);\n";
+        tmpl += "  _afir_src_bytes = ((_afir_src_bytes + 31u) / 32u) * 32u;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_srcf;\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_srcf, _afir_src_bytes);\n";
+        tmpl += "  AscendC::LocalTensor<float> _afir_srcf = _afir_tbuf_srcf.Get<float>();\n";
+        // Float dst TBuf (size = A*4 bytes).
+        tmpl += "  uint32_t _afir_dst_bytes = _afir_A * (uint32_t)sizeof(float);\n";
+        tmpl += "  _afir_dst_bytes = ((_afir_dst_bytes + 31u) / 32u) * 32u;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dstf;\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_dstf, _afir_dst_bytes);\n";
+        tmpl += "  AscendC::LocalTensor<float> _afir_dstf = _afir_tbuf_dstf.Get<float>();\n";
+        tmpl += "  AscendC::Cast<float, half>(_afir_srcf, $1, AscendC::RoundMode::CAST_NONE, _afir_R * _afir_A);\n";
+        tmpl += "  AscendC::PipeBarrier<PIPE_V>();\n";
+        srcRef = "_afir_srcf";
+        dstRef = "_afir_dstf";
+      }
+      tmpl += "  uint32_t _afir_srcShape[2] = {_afir_R, _afir_A};\n";
+      tmpl += "  AscendC::ReduceSum<" + opTypeStr +
+              ", AscendC::Pattern::Reduce::RA>(" + dstRef + ", " + srcRef +
+              ", _afir_ws, _afir_srcShape, false);\n";
+      if (needUpcast) {
+        tmpl += "  AscendC::PipeBarrier<PIPE_V>();\n";
+        tmpl += "  AscendC::Cast<half, float>($0, _afir_dstf, AscendC::RoundMode::CAST_RINT, _afir_A);\n";
       }
       tmpl += "}";
-    } else {
-      tmpl += "  // RA layout not yet implemented\n}";
     }
 
     // Find the TPipe value: walk enclosing function for PipeOp.
@@ -2475,18 +3264,39 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       args.push_back(dstQueueLenVal);
     if (srcTBufLenVal)
       args.push_back(srcTBufLenVal);
-    if (pipeVal)
-      args.push_back(pipeVal);
+    // Last operand ($N): a pre-allocated scratch tensor when one was provided
+    // (AR reduction-split path), otherwise the TPipe (so the verbatim can
+    // InitBuffer its own scratch).
+    if (Value lastArg = op.getSharedTmpBuffer() ? op.getSharedTmpBuffer() : pipeVal)
+      args.push_back(lastArg);
 
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
     rewriter.eraseOp(op);
   });
+
+  // Erase dead memref.cast and memref.subview ops left behind by the
+  // SetGlobalBuffer subview-peeling above.  Collect in two passes so we
+  // erase cast before subview (cast's operand is the subview result).
+  SmallVector<Operation *> deadCasts, deadSubviews;
+  moduleOp->walk([&](memref::CastOp op) {
+    if (op.getResult().use_empty())
+      deadCasts.push_back(op);
+  });
+  for (Operation *op : deadCasts)
+    op->erase();
+  moduleOp->walk([&](memref::SubViewOp op) {
+    if (op.getResult().use_empty())
+      deadSubviews.push_back(op);
+  });
+  for (Operation *op : deadSubviews)
+    op->erase();
 }
 
 LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
                                           StringRef tilingSpaceOutPath,
-                                          StringRef kernelFile) {
+                                          StringRef kernelFile,
+                                          StringRef socName) {
   auto moduleOp = dyn_cast<ModuleOp>(op);
   if (!moduleOp)
     return op->emitOpError("expected a module op");
@@ -2651,32 +3461,127 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   os << "#include \"adv_api/reduce/reduce.h\"\n";
   os << "\n";
 
-  // First pass: emit TilingData struct declarations from aicore funcs
-  bool jsonWritten = false;
+  // ConfusionTranspose (rank-2 [1,0] transpose, f16/f32, arbitrary size) is
+  // emitted inline when any kernel in the module uses it (LinalgToAscendC stamps
+  // `afir.uses_confusion_transpose`). Built on AscendC::TransDataTo5HD; vendored
+  // from AutoFuse. Inlining avoids kernel-JIT include-path plumbing.
+  bool usesConfusionTranspose = false;
+  moduleOp.walk([&](func::FuncOp f) {
+    if (f->hasAttr("afir.uses_confusion_transpose"))
+      usesConfusionTranspose = true;
+  });
+  if (usesConfusionTranspose)
+    os << mlir::afir::kAfirConfusionTransposeSource << "\n\n";
+
+  // First pass: emit TilingData struct declarations + per-func space.json.
+  //
+  // P2 (multi-plan tiling variants): when the module contains funcs named
+  // <familyId>__v<idx>, write one space.json per func at the same dir as
+  // `tilingSpaceOutPath`, named <funcName>_space.json, plus a sibling
+  // <familyId>_family.json index. For back-compat with legacy direct
+  // afir-translate callers that read the original tilingSpaceOutPath path,
+  // if there is exactly one aicore func ALSO write that path (same content
+  // as the per-func file).
+  struct VariantInfo { std::string id; std::string funcName; std::string spaceFile; };
+  llvm::StringMap<llvm::SmallVector<VariantInfo>> familyVariants;
+  llvm::SmallVector<func::FuncOp> aicoreFuncs;
   for (Operation &child : moduleOp.getBody()->getOperations()) {
     auto funcOp = dyn_cast<func::FuncOp>(child);
-    if (!funcOp)
-      continue;
-    if (!funcOp->hasAttr(ascendc::attr::global))
-      continue;
-
+    if (!funcOp || !funcOp->hasAttr(ascendc::attr::global)) continue;
     auto args = funcOp.getArguments();
-    if (args.empty())
-      continue;
-    auto tilingType =
-        dyn_cast<emitasc::PyStructType>(args.back().getType());
-    if (!tilingType)
-      continue;
+    if (args.empty()) continue;
+    if (!dyn_cast<emitasc::PyStructType>(args.back().getType())) continue;
+    aicoreFuncs.push_back(funcOp);
+  }
 
-    if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
+  // Helper: split "<family>__v<idx>" into (family, variantId). If no suffix,
+  // family == funcName and variantId == "" (legacy / no-variant codepath).
+  auto splitVariant = [](llvm::StringRef name)
+      -> std::pair<std::string, std::string> {
+    auto pos = name.rfind("__v");
+    if (pos == llvm::StringRef::npos) return {name.str(), ""};
+    auto tail = name.substr(pos + 3);
+    for (char c : tail) if (!llvm::isDigit(c)) return {name.str(), ""};
+    return {name.substr(0, pos).str(), ("v" + tail).str()};
+  };
+
+  // Emit the TilingData struct decl just once. P1b's multi-variant codegen
+  // produces N aicore funcs in this module, all sharing the same struct
+  // schema (they're clones of one source kernel before TilePlanGen). The
+  // emitter writes the C++ name "TilingData", so emitting per-func would
+  // cause `redefinition of TilingData` at compile time. If two genuinely
+  // different schemas ever end up in one .cpp, dedup needs to key on
+  // struct content rather than just "first-one-wins".
+  bool tilingStructEmitted = false;
+  for (func::FuncOp funcOp : aicoreFuncs) {
+    auto args = funcOp.getArguments();
+    auto tilingType = cast<emitasc::PyStructType>(args.back().getType());
+    if (!tilingStructEmitted) {
+      if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
+        return failure();
+      tilingStructEmitted = true;
+    }
+
+    if (tilingSpaceOutPath.empty()) continue;
+
+    auto [familyId, variantId] = splitVariant(funcOp.getName());
+    std::string funcNameStr = funcOp.getName().str();
+    SmallString<256> baseDir(tilingSpaceOutPath);
+    llvm::sys::path::remove_filename(baseDir);
+    SmallString<256> perFuncPath = baseDir;
+    llvm::sys::path::append(perFuncPath, funcNameStr + "_space.json");
+    if (failed(emitTilingSpaceJson(perFuncPath, kernelFile, funcOp, tilingType,
+                                   socName)))
       return failure();
 
-    // Write JSON skeleton for the first aicore func only
-    if (!tilingSpaceOutPath.empty() && !jsonWritten) {
-      emitTilingSpaceJson(tilingSpaceOutPath, kernelFile,
-                          funcOp.getName(), tilingType);
-      jsonWritten = true;
+    if (!variantId.empty())
+      familyVariants[familyId].push_back({variantId, funcNameStr,
+                                          perFuncPath.str().str()});
+
+    // Back-compat: always overwrite the requested tilingSpaceOutPath with the
+    // first variant's (v0) content, so direct callers (run.sh examples) see
+    // fresh schema even when multiple variants exist for a family.  Autotuner
+    // reads <family>_family.json + per-variant files and doesn't depend on
+    // this path, so the back-compat copy doesn't affect it.  Without this,
+    // multi-variant codegen left stale content from pre-multi-variant runs
+    // because the old single-variant guard skipped the write.
+    bool isFirstVariant = variantId.empty() || variantId == "v0";
+    if (isFirstVariant && tilingSpaceOutPath != perFuncPath)
+      if (failed(emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp,
+                                     tilingType, socName)))
+        return failure();
+  }
+
+  // Emit family.json per family (only when at least one variant present).
+  for (auto &kv : familyVariants) {
+    llvm::StringRef familyId = kv.first();
+    SmallString<256> baseDir(tilingSpaceOutPath);
+    llvm::sys::path::remove_filename(baseDir);
+    SmallString<256> familyPath = baseDir;
+    llvm::sys::path::append(familyPath, familyId.str() + "_family.json");
+
+    llvm::json::Array variantArr;
+    for (auto &v : kv.second) {
+      llvm::json::Object entry;
+      entry["id"] = v.id;
+      entry["func_name"] = v.funcName;
+      entry["space_file"] = llvm::sys::path::filename(v.spaceFile).str();
+      variantArr.push_back(std::move(entry));
     }
+    llvm::json::Object root;
+    root["kernel_id"] = familyId.str();
+    root["variants"] = std::move(variantArr);
+
+    std::error_code ec;
+    llvm::raw_fd_ostream f(familyPath, ec);
+    if (ec) {
+      llvm::errs() << "Warning: cannot write family.json to " << familyPath
+                   << ": " << ec.message() << "\n";
+      continue;
+    }
+    llvm::json::OStream jos(f, /*IndentSize=*/2);
+    jos.value(llvm::json::Value(std::move(root)));
+    f << "\n";
   }
 
   // Second pass: emit aicore kernel functions only.

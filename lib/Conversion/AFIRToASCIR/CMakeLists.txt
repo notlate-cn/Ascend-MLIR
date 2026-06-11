@@ -1,6 +1,5 @@
 add_mlir_library(AFIRToASCIRConversion
   AFIRToASCIR.cpp
-  AFIRToASCIRText.cpp
   DialectBuilder.cpp
   Math/Elementwise.cpp
 
