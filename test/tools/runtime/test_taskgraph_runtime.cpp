@@ -1755,6 +1755,105 @@ static void testRetainedSessionSummaryContents() {
   cleanupProfileSummaryRetentionFixture(fixture);
 }
 
+static void testRetainedSessionSummaryFallsBackBetweenScoreAndCycleCount() {
+  ProfileTrace trace;
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-retain-summary-fallback-src");
+  const std::filesystem::path destRoot =
+      makeTempDir("profile-retain-summary-fallback-dst");
+  std::filesystem::create_directories(sourceRoot / "work");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path mainPath = sourceRoot / "work" / "main.json";
+  const std::filesystem::path consumerPath =
+      sourceRoot / "work" / "consumer.json";
+  {
+    std::ofstream os(mainPath);
+    os << R"({"score":11})";
+  }
+  {
+    std::ofstream os(consumerPath);
+    os << R"({"cycle_count":19})";
+  }
+
+  trace.sessionId = "runtime-session--summary-fallback";
+  addProfileArtifact(trace, "main", ExecutionBackendKind::Simulation,
+                     mainPath.string());
+  addProfileArtifact(trace, "consumer", ExecutionBackendKind::Simulation,
+                     consumerPath.string());
+
+  const std::filesystem::path summaryPath =
+      destRoot / trace.sessionId / "session_summary.json";
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli falls back between score and cycle_count");
+  if (retainedOr) {
+    auto parsed = llvm::json::parse(readTextFile(summaryPath.string()));
+    EXPECT((bool)parsed,
+           "retained session summary fallback fixture parses as json");
+    if (parsed) {
+      const auto *object = parsed->getAsObject();
+      EXPECT(object != nullptr,
+             "retained session summary fallback fixture is a json object");
+      if (object) {
+        auto totalScore = object->getInteger("total_score");
+        auto totalCycleCount = object->getInteger("total_cycle_count");
+        EXPECT(totalScore && *totalScore == 30,
+               "retained session summary falls back missing score values");
+        EXPECT(totalCycleCount && *totalCycleCount == 30,
+               "retained session summary falls back missing cycle_count values");
+      }
+    } else {
+      llvm::consumeError(parsed.takeError());
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
+static void testRetainProfileArtifactsFailsOnDuplicateTaskIds() {
+  ProfileTrace trace;
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-retain-summary-duplicate-src");
+  const std::filesystem::path destRoot =
+      makeTempDir("profile-retain-summary-duplicate-dst");
+  std::filesystem::create_directories(sourceRoot / "work");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path firstPath = sourceRoot / "work" / "first.json";
+  const std::filesystem::path secondPath = sourceRoot / "work" / "second.json";
+  {
+    std::ofstream os(firstPath);
+    os << R"({"score":1,"cycle_count":1})";
+  }
+  {
+    std::ofstream os(secondPath);
+    os << R"({"score":2,"cycle_count":2})";
+  }
+
+  trace.sessionId = "runtime-session--summary-duplicate";
+  addProfileArtifact(trace, "main", ExecutionBackendKind::Simulation,
+                     firstPath.string());
+  addProfileArtifact(trace, "main", ExecutionBackendKind::Simulation,
+                     secondPath.string());
+
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT(!retainedOr,
+         "retainProfileArtifactsForCli fails on duplicate retained task ids");
+  if (!retainedOr) {
+    std::string message = llvm::toString(retainedOr.takeError());
+    EXPECT(message.find("duplicate retained profile task id") !=
+               std::string::npos,
+           "duplicate retained task failure reports a clear error");
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
 static void testRetainProfileArtifactsPrunesOldSessions() {
   const std::filesystem::path retainRoot = makeTempDir("profile-retain-root");
   std::filesystem::create_directories(retainRoot);
@@ -2796,6 +2895,8 @@ int main() {
   testRetainProfileArtifactsForCli();
   testRetainProfileArtifactsCreatesSessionSummary();
   testRetainedSessionSummaryContents();
+  testRetainedSessionSummaryFallsBackBetweenScoreAndCycleCount();
+  testRetainProfileArtifactsFailsOnDuplicateTaskIds();
   testRetainProfileArtifactsPrunesOldSessions();
   testRetainProfileArtifactsIgnoresNonDirectories();
   testBackendSurfacesProfileTrace();
