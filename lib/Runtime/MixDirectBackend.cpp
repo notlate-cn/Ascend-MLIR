@@ -1515,6 +1515,24 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_WORKSPACE");
       appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_TILING");
     }
+    // For vector-only kernels, the AIC probe produces an empty config.
+    // Synthesize AIC defines from the AIV defines so bisheng can still compile
+    // the source under the cube architecture (producing an empty AIC section).
+    if (deviceAnalyzed.aicDefines.empty() && !deviceAnalyzed.aivDefines.empty()) {
+      for (const std::string &def : deviceAnalyzed.aivDefines) {
+        std::string aicDef = def;
+        // Replace AIV entry suffix with AIC entry suffix in the macro define.
+        llvm::StringRef defRef(aicDef);
+        size_t pos = aicDef.find("_0_mix_aiv");
+        if (pos != std::string::npos)
+          aicDef.replace(pos, 10, "_0_mix_aic");
+        // Replace vector architecture flag with cube architecture flag.
+        pos = aicDef.find("__DAV_C220_VEC__");
+        if (pos != std::string::npos)
+          aicDef.replace(pos, 16, "__DAV_C220_CUBE__");
+        deviceAnalyzed.aicDefines.push_back(std::move(aicDef));
+      }
+    }
     if (deviceAnalyzed.aicDefines.empty())
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),

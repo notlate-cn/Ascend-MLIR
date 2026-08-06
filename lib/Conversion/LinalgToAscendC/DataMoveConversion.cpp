@@ -19,6 +19,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
@@ -151,7 +152,10 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
           toI16(builder, loc, height),  // dst_nz_n_stride
           constI16(builder, loc, 0),    // dst_nz_matrix_stride
       };
-      SmallVector<Type> nd2nzTypes(8, builder.getI16Type());
+      // Nd2NzParams fields are all uint16_t — use Unsigned so CodeEmitter emits
+      // static_cast<uint16_t>() instead of static_cast<int16_t>().
+      auto ui16 = IntegerType::get(mlirCtx, 16, IntegerType::Unsigned);
+      SmallVector<Type> nd2nzTypes(8, ui16);
       Value params = builder.create<ConstructOp>(
           loc, Nd2NzParamsType::get(mlirCtx), nd2nzOperands,
           builder.getTypeArrayAttr(nd2nzTypes));
@@ -271,10 +275,11 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
           constI1(builder, loc, false), // if_transpose
           constI8(builder, loc, 0),     // addr_mode
       };
-      SmallVector<Type> ldTypes = {builder.getI16Type(), builder.getI8Type(),
-                                    builder.getI16Type(), builder.getI16Type(),
-                                    builder.getI16Type(), builder.getI1Type(),
-                                    builder.getI8Type()};
+      // LoadData2DParams fields: uint16, uint8, uint16, uint8, uint16, bool, uint8
+      auto ui16 = IntegerType::get(mlirCtx, 16, IntegerType::Unsigned);
+      auto ui8  = IntegerType::get(mlirCtx, 8,  IntegerType::Unsigned);
+      SmallVector<Type> ldTypes = {ui16, ui8, ui16, ui8, ui16,
+                                   builder.getI1Type(), ui8};
       Value params = builder.create<ConstructOp>(
           loc, LoadData2DParamsType::get(mlirCtx), ldOperands,
           builder.getTypeArrayAttr(ldTypes));
@@ -331,19 +336,21 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
               loc, emitDim(builder, loc, src, 0),
               builder.create<arith::ConstantIndexOp>(loc, 16)));
 
+      // LoadData2dTransposeParams(startIndex, repeatTimes, srcStride,
+      //                           dstGap, dstFracGap, addrMode)
+      // No sid or ifTranspose fields in this struct.
       SmallVector<Value> ldOperands = {
-          constI16(builder, loc, 0),   // start_index
-          kBlocks,                      // repeat_times (k/16)
-          constI16(builder, loc, 1),   // src_stride = 1
-          constI16(builder, loc, 0),   // sid
-          constI16(builder, loc, 0),   // dst_gap
-          constI1(builder, loc, true), // if_transpose = true
-          constI8(builder, loc, 0),    // addr_mode
+          constI16(builder, loc, 0),   // startIndex
+          kBlocks,                      // repeatTimes (k/16)
+          constI16(builder, loc, 1),   // srcStride = 1
+          constI16(builder, loc, 0),   // dstGap = 0
+          constI16(builder, loc, 0),   // dstFracGap = 0
+          constI8(builder, loc, 0),    // addrMode = 0
       };
-      SmallVector<Type> ldTypes = {builder.getI16Type(), builder.getI8Type(),
-                                    builder.getI16Type(), builder.getI16Type(),
-                                    builder.getI16Type(), builder.getI1Type(),
-                                    builder.getI8Type()};
+      // LoadData2dTransposeParams fields: uint16, uint8, uint16, uint16, uint16, uint8
+      auto ui16 = IntegerType::get(mlirCtx, 16, IntegerType::Unsigned);
+      auto ui8  = IntegerType::get(mlirCtx, 8,  IntegerType::Unsigned);
+      SmallVector<Type> ldTypes = {ui16, ui8, ui16, ui16, ui16, ui8};
       Value params = builder.create<ConstructOp>(
           loc, LoadData2dTransposeParamsType::get(mlirCtx), ldOperands,
           builder.getTypeArrayAttr(ldTypes));

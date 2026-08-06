@@ -21,6 +21,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
@@ -1447,15 +1448,17 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     Location loc = matmulOp.getLoc();
     builder.setInsertionPoint(matmulOp);
-    Type elemType = cast<MemRefType>(A.getType()).getElementType();
+    Type elemTypeA = cast<MemRefType>(A.getType()).getElementType();
+    Type elemTypeC = cast<MemRefType>(C.getType()).getElementType();
 
-    Value tensorA = dequeTensor(builder, loc, qA, elemType);
-    Value tensorB = dequeTensor(builder, loc, qB, elemType);
+    Value tensorA = dequeTensor(builder, loc, qA, elemTypeA);
+    Value tensorB = dequeTensor(builder, loc, qB, elemTypeA);
 
     // CO1 accumulates across the K-loop: alloc before the enclosing for-loop,
     // enque after it, so the queue slot is held for all K iterations.
+    // CO1 uses its own element type (f32 for half-precision matmul accumulation).
     auto [tensorC, cHoistFor] =
-        allocHoisted(matmulOp, qC, elemType, loc);
+        allocHoisted(matmulOp, qC, elemTypeC, loc);
 
     // Build MmadParams with runtime m/n/k values.
     // A: [m x k], B: [k x n]
@@ -1478,9 +1481,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         builder.create<arith::ConstantIntOp>(loc, builder.getI8Type(), 0);
 
     SmallVector<Value> mmadOperands = {mVal, nVal, kVal, zero8, zero8, zero8};
-    SmallVector<Type> mmadTypes = {builder.getI16Type(), builder.getI16Type(),
-                                    builder.getI16Type(), builder.getI8Type(),
-                                    builder.getI8Type(), builder.getI8Type()};
+    // MmadParams fields are uint16_t/uint8_t — use Unsigned IntegerType so
+    // the CodeEmitter emits static_cast<uint16_t> rather than <int16_t>.
+    auto ui16 = IntegerType::get(mlirCtx, 16, IntegerType::Unsigned);
+    auto ui8  = IntegerType::get(mlirCtx, 8,  IntegerType::Unsigned);
+    SmallVector<Type> mmadTypes = {ui16, ui16, ui16, ui8, ui8, ui8};
     Value mmadParams = builder.create<ConstructOp>(
         loc, MmadParamsType::get(mlirCtx), mmadOperands,
         builder.getTypeArrayAttr(mmadTypes));

@@ -57,7 +57,6 @@ int main() {
                  << llvm::toString(result4.takeError()) << "\n";
     return 1;
   }
-  // Verify 65536 appears in the generated runner.cpp
   {
     std::ifstream src("/tmp/runner_gen_test4/runner.cpp");
     std::string content((std::istreambuf_iterator<char>(src)), {});
@@ -67,6 +66,49 @@ int main() {
     }
   }
   llvm::outs() << "PASS Generate workspace_size=65536 in runner.cpp\n";
+
+  // Test 5: mix runner emits packed wrapper launch semantics, not raw rtKernelLaunch
+  cfg.kernel_name   = "fc_relu_mix";
+  cfg.kernel_type   = "mix";
+  cfg.num_inputs    = 3;
+  cfg.num_outputs   = 1;
+  cfg.output_dtypes = {"f16"};
+  cfg.workspace_size = 32768;
+  auto result5 = gen.Generate(cfg, "/tmp/runner_gen_test5_mix");
+  if (!result5) {
+    llvm::errs() << "FAIL Generate mix runner: "
+                 << llvm::toString(result5.takeError()) << "\n";
+    return 1;
+  }
+  {
+    std::ifstream src("/tmp/runner_gen_test5_mix/runner.cpp");
+    std::string content((std::istreambuf_iterator<char>(src)), {});
+    auto requireContains = [&](const std::string &needle, const std::string &msg) {
+      if (content.find(needle) == std::string::npos) {
+        llvm::errs() << "FAIL: mix runner missing " << msg << "\n";
+        return false;
+      }
+      return true;
+    };
+    auto requireAbsent = [&](const std::string &needle, const std::string &msg) {
+      if (content.find(needle) != std::string::npos) {
+        llvm::errs() << "FAIL: mix runner unexpectedly contains " << msg << "\n";
+        return false;
+      }
+      return true;
+    };
+    if (!requireContains("if (input_paths.size() != 3)", "3-input arity check")) return 1;
+    if (!requireContains("Only mix runners with exactly 3 inputs and 1 output are supported", "clear mix arity error")) return 1;
+    if (!requireContains("--inputs", "--inputs parsing")) return 1;
+    if (!requireContains("_packed.so", "packed .so resolution")) return 1;
+    if (!requireContains("bin_path + \"/lib\" + kernel_name + \"_packed.so\"", "directory-based packed .so fallback")) return 1;
+    if (!requireContains("aclrtlaunch_fc_relu_mix", "aclrtlaunch wrapper symbol")) return 1;
+    if (!requireContains("dlopen(packed_so_path.c_str()", "packed library dlopen")) return 1;
+    if (!requireContains("rtStreamSynchronize", "stream synchronize usage")) return 1;
+    if (!requireContains("rtMalloc workspace failed", "workspace allocation handling")) return 1;
+    if (!requireAbsent("rtKernelLaunch(", "raw rtKernelLaunch call")) return 1;
+  }
+  llvm::outs() << "PASS Generate mix runner packed wrapper semantics in runner.cpp\n";
 
   return 0;
 }

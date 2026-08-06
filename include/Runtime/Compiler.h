@@ -20,7 +20,9 @@ public:
 
   explicit Compiler(const Config& cfg = Config{});
 
-  // Compiles src_file → output_dir/kernel_name.bin; returns binary path.
+  // Compiles src_file into a runtime-consumable artifact.
+  // - vec/cube: returns output_dir/kernel_name.bin
+  // - mix: returns output_dir/lib<kernel_name>_packed.so
   llvm::Expected<std::string> Compile(const std::string& src_file,
                                       const std::string& output_dir,
                                       const std::string& kernel_name);

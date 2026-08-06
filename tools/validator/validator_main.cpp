@@ -8,6 +8,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <sstream>
@@ -33,8 +34,13 @@ static cl::opt<std::string> TilingLayout("tiling-layout",
 static cl::opt<std::string> TilingSchemaFile("tiling-schema",
     cl::desc("Path to tiling_space.json; validates and packs --tiling-params by name"),
     cl::init(""));
+static cl::opt<std::string> TilingBinFile("tiling-bin",
+    cl::desc("Path to raw packed tiling bytes (overrides --tiling-params / --tiling-schema)"),
+    cl::init(""));
 static cl::opt<int> BlockDim("block-dim",
     cl::desc("Number of AiCore blocks"), cl::init(1));
+static cl::opt<int> WorkspaceSize("workspace-size",
+    cl::desc("Workspace bytes allocated for packed/raw runtime paths"), cl::init(16 * 1024 * 1024));
 static cl::opt<std::string> KernelType("kernel-type",
     cl::desc("Kernel type: vec | cube | mix (default: vec)"), cl::init("vec"));
 static cl::opt<bool> SimMode("sim",
@@ -149,7 +155,18 @@ int main(int argc, char** argv) {
 
   // Build tiling bytes
   std::vector<uint8_t> tiling;
-  if (!TilingParams.empty()) {
+  if (!TilingBinFile.empty()) {
+    std::ifstream is(TilingBinFile, std::ios::binary);
+    if (!is) {
+      llvm::errs() << "Error: cannot open --tiling-bin " << TilingBinFile << "\n";
+      _Exit(4);
+    }
+    tiling.assign(std::istreambuf_iterator<char>(is), std::istreambuf_iterator<char>());
+    if (!is.good() && !is.eof()) {
+      llvm::errs() << "Error: failed reading --tiling-bin " << TilingBinFile << "\n";
+      _Exit(4);
+    }
+  } else if (!TilingParams.empty()) {
     if (!TilingSchemaFile.empty()) {
       // Schema-validated path: load schema, accept params in any order
       auto schemaOrErr = mlir::runtime::TilingSchema::fromJson(TilingSchemaFile);
@@ -204,8 +221,9 @@ int main(int argc, char** argv) {
 
   // Load inputs
   RunArgs args;
-  args.tiling    = tiling;
+  args.tiling = tiling;
   args.block_dim = BlockDim;
+  args.workspace_size = static_cast<size_t>(WorkspaceSize);
 
   for (auto& path : splitComma(Inputs)) {
     auto arr_or = LoadNpy(path);
@@ -245,11 +263,6 @@ int main(int argc, char** argv) {
   // Dump expected immediately after loading, before simulator touches memory
   if (!DumpExpected.empty()) dumpArray(exp_arr, DumpExpected, Precision);
 
-  // Map kernel_type → magic
-  // "mix" uses MAGIC_ELF_AIVEC as conservative default (same as "vec")
-  uint32_t magic = Executor::MAGIC_ELF_AIVEC;
-  if (KernelType.getValue() == "cube") magic = Executor::MAGIC_ELF_AICUBE;
-
   // Initialize executor
   Executor executor(BackendMode::Simulation);
   if (auto err = executor.Initialize()) {
@@ -258,18 +271,33 @@ int main(int argc, char** argv) {
     _Exit(3);
   }
 
-  // Register binary once
-  auto handle_or = executor.RegisterBinary(BinFile, KernelName, magic);
-  if (!handle_or) {
-    llvm::errs() << "Error: RegisterBinary failed: "
-                 << llvm::toString(handle_or.takeError()) << "\n";
-    _Exit(3);
-  }
-
-  // Run and compare
   SimValidator validator;
-  auto result = validator.ValidateBinary(*handle_or, executor, args,
-                                         expected_arrs, Atol, Rtol);
+  SimValidator::Result result;
+  const bool isMix = (KernelType.getValue() == "mix");
+  if (isMix) {
+    if (auto err = executor.RunPackedMixFile(BinFile, KernelName, args)) {
+      llvm::errs() << "Error: RunPackedMixFile failed: "
+                   << llvm::toString(std::move(err)) << "\n";
+      _Exit(3);
+    }
+    result = validator.CompareOnly(args, expected_arrs, Atol, Rtol);
+  } else {
+    // Map kernel_type → magic
+    uint32_t magic = Executor::MAGIC_ELF_AIVEC;
+    if (KernelType.getValue() == "cube") magic = Executor::MAGIC_ELF_AICUBE;
+
+    // Register binary once
+    auto handle_or = executor.RegisterBinary(BinFile, KernelName, magic);
+    if (!handle_or) {
+      llvm::errs() << "Error: RegisterBinary failed: "
+                   << llvm::toString(handle_or.takeError()) << "\n";
+      _Exit(3);
+    }
+
+    // Run and compare
+    result = validator.ValidateBinary(*handle_or, executor, args,
+                                      expected_arrs, Atol, Rtol);
+  }
 
   // Dump actual immediately after run, before buffers go out of scope
   if (!DumpActual.empty()) dumpArray(args.outputs[0], DumpActual, Precision);

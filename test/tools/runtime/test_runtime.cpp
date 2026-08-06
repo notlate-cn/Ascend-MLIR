@@ -28,6 +28,8 @@
 //       -ldl -o /tmp/test_runtime
 //   /tmp/test_runtime
 
+#include "Runtime/Compiler.h"
+#include "Runtime/Executor.h"
 #include "Runtime/HostRunnerGen.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/Types.h"
@@ -35,6 +37,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -316,6 +319,41 @@ static void testNpyIOErrors() {
   }
 }
 
+static void testCompilerMixArtifact() {
+  llvm::outs() << "\n[Compiler mix artifact]\n";
+
+  Compiler::Config cfg;
+  cfg.kernel_type = "mix";
+  cfg.soc_version = "Ascend910B1";
+  cfg.verbose = false;
+
+  Compiler compiler(cfg);
+  const std::string buildDir = "/tmp/rt_mix_fixture_build";
+  std::filesystem::create_directories(buildDir);
+  auto out = compiler.Compile(
+      "/Volumes/GM9/code/Ascend-MLIR/test/tools/runtime/mix_stub_fixture.cpp",
+      buildDir,
+      "fc_relu");
+  EXPECT((bool)out, "mix compiler returns an artifact path");
+  if (out) {
+    EXPECT(out->find(".so") != std::string::npos,
+           "mix compiler returns packed shared library path");
+  } else {
+    llvm::consumeError(out.takeError());
+  }
+}
+
+static void testPackedMixExecutorErrors() {
+  llvm::outs() << "\n[Packed mix executor]\n";
+
+  Executor ex(BackendMode::Simulation);
+  RunArgs args;
+  args.block_dim = 1;
+  auto err = ex.RunPackedMixFile("/tmp/missing.so", "fc_relu", args);
+  EXPECT((bool)err, "missing packed mix library returns an error");
+  if (err) llvm::consumeError(std::move(err));
+}
+
 static void testHostRunnerGen() {
   llvm::outs() << "\n[HostRunnerGen]\n";
 
@@ -455,6 +493,8 @@ int main() {
   testNDArrayRAII();
   testNpyIORoundTrip();
   testNpyIOErrors();
+  testCompilerMixArtifact();
+  testPackedMixExecutorErrors();
   testHostRunnerGen();
 
   llvm::outs() << "\n========================================\n"
