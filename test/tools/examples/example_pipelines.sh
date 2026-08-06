@@ -47,7 +47,7 @@ source "${REPO_ROOT}/examples/env.sh"
 
 export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64:${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION:-Ascend910B1}/lib:${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64/device/lib64:${ASCEND_HOME_PATH}/runtime/lib64/stub${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-for tool in bash python3 afir-opt afir-translate runtime-session mix-compiler; do
+for tool in bash python3 afir-opt ascend-mlir-translate runtime-session mix-compiler; do
   if ! require_tool "${tool}"; then
     fail "required tool '${tool}' is unavailable"
   fi

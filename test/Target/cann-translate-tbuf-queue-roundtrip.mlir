@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void tbuf_queue_roundtrip
 // CHECK-NOT: EnQue

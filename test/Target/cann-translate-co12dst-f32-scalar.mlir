@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void co12dst_f32_scalar
 // CHECK: uint32_t _afir_count = (uint32_t)(

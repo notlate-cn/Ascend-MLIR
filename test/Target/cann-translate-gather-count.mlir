@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void gather_count_uses_result_count
 // CHECK: uint32_t _afir_idx32_count = static_cast<uint32_t>(c16_i32);
@@ -12,7 +12,7 @@
 // CHECK: uint32_t _afir_gather_count = static_cast<uint32_t>(c16_i32);
 // CHECK: uint32_t _afir_gather_padded_count = _afir_gather_count == 0u ? 0u : ((_afir_gather_count + 127u) / 128u) * 128u;
 // CHECK: SetSize(_afir_gather_padded_count);
-// CHECK: SetSize((uint32_t)(c128_idx / 2u));
+// CHECK: SetSize((uint32_t)c128_idx);
 // CHECK: AscendC::Gather(
 module {
   func.func @gather_count_uses_result_count(

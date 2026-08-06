@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void shape_views(
 // CHECK-NOT: reinterpret_cast<float*>

@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void align_runtime_buffers
 // CHECK: uint32_t _afir_bytes = static_cast<uint32_t>(c12_idx);

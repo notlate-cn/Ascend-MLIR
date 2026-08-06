@@ -13,7 +13,7 @@ REPO_ROOT="$(cd "${DIR}/../.." && pwd)"
 source "$DIR/../mainline-target-env.sh"
 
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
-AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
+ASCEND_MLIR_TRANSLATE="${ASCEND_MLIR_TRANSLATE:-${AFIR_TRANSLATE:-ascend-mlir-translate}}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
@@ -180,7 +180,7 @@ log "  output: $BUILD_DIR/step8_cann.mlir"
 
 echo ""
 echo "==================== [STAGE 9] CANN codegen ===================="
-"$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/step8_cann.mlir" \
+"$ASCEND_MLIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/step8_cann.mlir" \
   --tiling-space-out="$PHASE5_TILING_SPACE" \
   --artifact-manifest-out="$PHASE5_ARTIFACT_MANIFEST" \
   --host-tiling-out="$PHASE5_HOST_TILING" \

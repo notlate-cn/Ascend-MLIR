@@ -1,4 +1,4 @@
-// RUN: afir-opt --ascend-canonicalize-cann-signature %s | afir-translate -mlir-to-cann - | FileCheck %s
+// RUN: afir-opt --ascend-canonicalize-cann-signature %s | ascend-mlir-translate -mlir-to-cann - | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void uses_global_const(
 // CHECK: GM_ADDR

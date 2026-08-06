@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void global_bracket_dst_copy(
 // CHECK: AscendC::GlobalTensor<half> _afir_gt;

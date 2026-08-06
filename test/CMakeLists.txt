@@ -9,6 +9,7 @@ configure_lit_site_cfg(
 set(AFIR_TEST_DEPENDS
   afir-opt
   ascend-mlir-opt
+  ascend-mlir-translate
   ascend-debug
   afir-translate
   FileCheck

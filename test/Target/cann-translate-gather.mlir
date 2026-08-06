@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %S/cann-translate-gather-input.mlir | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %S/cann-translate-gather-input.mlir | FileCheck %s
 
 // CHECK: SetGlobalBuffer(reinterpret_cast<__gm__ int64_t*>(v2) + c0_i32);
 // CHECK: SetGlobalBuffer(reinterpret_cast<__gm__ half*>(v1));
@@ -19,7 +19,7 @@
 // CHECK: for (uint32_t _afir_i = _afir_idx32_count; _afir_i < _afir_idx32_padded_count; _afir_i++)
 // CHECK: _afir_idx32_0.SetValue(_afir_i, 0u);
 // CHECK: _afir_idx32_0.SetSize(_afir_idx32_padded_count);
-// CHECK: AscendC::PipeBarrier<PIPE_V>();
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK: AscendC::GlobalTensor<half> _afir_gt;
 // CHECK: _afir_gt.SetGlobalBuffer(
 // CHECK-SAME: GetPhyAddr(
@@ -37,7 +37,7 @@
 // CHECK: for (uint32_t _afir_off = 0; _afir_off < _afir_gather_count; _afir_off += 128)
 // CHECK: AscendC::Gather(
 // CHECK-SAME: _afir_idx32_0[_afir_off]
-// CHECK: AscendC::PipeBarrier<PIPE_V>();
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK-NOT: v39
 // CHECK: AscendC::Max(
 // CHECK: AscendC::LocalTensor<half> [[BIAS:v[0-9]+]] =

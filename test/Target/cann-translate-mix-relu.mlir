@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %S/cann-translate-mix-relu-input.mlir | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %S/cann-translate-mix-relu-input.mlir | FileCheck %s
 
 // Expected shape: one cube region, one boundary transfer/synchronization layer,
 // and one vector region in a single chained mix lowering path.
