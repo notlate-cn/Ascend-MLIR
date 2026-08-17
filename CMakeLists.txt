@@ -82,17 +82,39 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_BINARY_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/lib)
 
-# StableHLO配置
-set(STABLEHLO_DIR "${CMAKE_SOURCE_DIR}/externals/stablehlo")
-include_directories(${STABLEHLO_DIR}/include)
-
 set(PYASC_DIR "${CMAKE_SOURCE_DIR}/externals/pyasc")
 set(PYASC_BIN_DIR "${CMAKE_BINARY_DIR}/externals/pyasc")
 include_directories(${PYASC_DIR}/include)
 include_directories(${PYASC_BIN_DIR}/include)
 
-# 添加LLVM定义
-add_definitions(${LLVM_DEFINITIONS})
+# 添加 LLVM 定义。
+# LLVMConfig.cmake 可能把多个定义放在一个空格分隔的字符串中；直接传给
+# add_definitions() 会导致部分定义（尤其是 _GLIBCXX_USE_CXX11_ABI）没有进入
+# CXX_DEFINES，最终表现为链接 LLVM 静态库时出现 ABI 不一致。
+if(LLVM_DEFINITIONS)
+  separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+  add_definitions(${LLVM_DEFINITIONS_LIST})
+endif()
+
+# Keep out-of-tree targets ABI-compatible with the LLVM package used by this
+# build. Some LLVM packages expose `_GLIBCXX_USE_CXX11_ABI` through
+# `llvm-config --cxxflags` but omit it from `LLVM_DEFINITIONS`.
+find_program(LLVM_CONFIG_EXECUTABLE
+  NAMES llvm-config
+  HINTS "${LLVM_TOOLS_BINARY_DIR}" "${LLVM_BUILD_DIR}/bin")
+if(LLVM_CONFIG_EXECUTABLE)
+  execute_process(
+    COMMAND "${LLVM_CONFIG_EXECUTABLE}" --cxxflags
+    OUTPUT_VARIABLE LLVM_CXXFLAGS
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  separate_arguments(LLVM_CXXFLAGS_LIST NATIVE_COMMAND "${LLVM_CXXFLAGS}")
+  foreach(LLVM_CXXFLAG IN LISTS LLVM_CXXFLAGS_LIST)
+    if(LLVM_CXXFLAG MATCHES "^-D_GLIBCXX_USE_CXX11_ABI=")
+      string(REGEX REPLACE "^-D" "" LLVM_ABI_DEFINITION "${LLVM_CXXFLAG}")
+      add_compile_definitions("${LLVM_ABI_DEFINITION}")
+    endif()
+  endforeach()
+endif()
 
 # 设置输出目录
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
